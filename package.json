@@ -1,0 +1,9 @@
+{
+  "name": "mcen-pipe-network",
+  "private": true,
+  "type": "module",
+  "description": "Pipe network analysis in the browser, for MCEN 3021.",
+  "scripts": {
+    "test": "node --test"
+  }
+}
