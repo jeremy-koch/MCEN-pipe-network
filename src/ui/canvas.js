@@ -208,7 +208,9 @@ function drawPipe(p, flagged) {
   if (r && enc) {
     if (S.show.width && enc.qMax > 0) {
       const frac = Math.abs(r.Q) / enc.qMax;
-      style += `stroke-width:${(direct ? 2 + 4 * frac : 3 + 7 * frac).toFixed(1)}px;`;
+      // One scale for every pipe, zero-length connections included: the same
+      // flow rate must always draw the same width, or the picture lies.
+      style += `stroke-width:${(3 + 7 * frac).toFixed(1)}px;`;
     }
     const v = enc.value && !sel && !flagged.has(p.id) ? enc.value(r) : null;
     if (v !== null) style += `stroke:${rampColor(enc.hi > enc.lo ? (v - enc.lo) / (enc.hi - enc.lo) : 0.5)};`;
