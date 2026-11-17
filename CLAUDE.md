@@ -326,3 +326,75 @@ made during the build, so they are not re-derived:
   bundled Node:
   `ELECTRON_RUN_AS_NODE=1 "/Applications/Visual Studio Code.app/Contents/MacOS/Code" --test`.
   The referee script was run with `~/miniconda3/envs/quartos/bin/python`.
+
+---
+
+## Build notes (second build, 2026-11-16)
+
+Student-facing additions, all built and tested. `README.md` lists them tab
+by tab. Decisions made, so they are not re-derived:
+
+- **Design file is schema 2.** Added `author`, `notes`, `labels` (text on
+  the canvas, `{id, x, y, text}`), `settings.vfd_price` and
+  `settings.pipe_price`, a pump's `vfd` flag, and a scenario's `share`.
+  A schema 1 file opens with these at their defaults.
+- **`src/solver/insight.js`** holds the new page-free physics: `gradeLine`,
+  `powerBudget`, `designDiff`, and the sweep (`sweepTargets`,
+  `sweepOutputs`, `runSweep`). Tests are in `tests/insight.test.js`.
+- **Sweep** varies one input and re-solves the whole design at each step
+  (25 by default). It never changes the design. There is no goal-seek
+  button on purpose: the student reads the answer off the curve. "All
+  valves together" and "All pumps together" are targets, because the
+  project moves three valves at once.
+- **Where the power goes** is an energy balance on the whole network, not
+  a head budget along one path, because a path is not unique in a network.
+  Lift = rho g (sum of Q H where water leaves minus where it enters).
+- **Grade line.** Losses inside a pipe are drawn as a straight line (the
+  design does not say where each fitting sits). Pumps, valves and
+  zero-length connections are drawn 3% of the path wide so their steps
+  can be seen; axis labels are true distances.
+- **Pump plot.** Instead of a "combined curve" for parallel pumps (which
+  only exists when pumps share both nodes, and the station's do not), each
+  pump's plot has a second, dashed flow curve: the same pump with every
+  other pump off. Also ghost head curves at 100/90/80/70% speed and the
+  best-efficiency point.
+- **Low pressure.** A note (not an error) wherever the absolute static
+  pressure at a pipe end is below vapor pressure; `result.lowP` lists the
+  components.
+- **Prices.** A drive costs `vfd_price` ($4,000 default) for every pump
+  whose drive box is ticked or whose speed ratio is not 1. Pipe costs
+  `pipe_price` ($150/m default) at D = 0.10 m, in proportion to D. Both
+  are teaching props and editable. Still no payback calculation.
+- **Scenarios** mark cells that differ from the canvas, list the changed
+  inputs in words, can be updated and renamed, and carry a share of the
+  running time for a weighted energy cost.
+- **Selection.** `S.sel` is still the one thing the panel shows; `S.also`
+  holds the ids of anything else selected (Shift+click, Shift+drag box).
+  Move, duplicate, copy/paste and delete act on all of them.
+- **Not verified in a real browser.** The page code was run under Node
+  with a stand-in DOM (no exceptions on every tab and example) and its
+  SVG output was looked at as images, but hover readouts, the tour's
+  placement, PNG export and drag gestures have not been clicked through.
+
+---
+
+## Build notes (third pass, 2026-11-16)
+
+- **Valves can be closed.** A valve has a `closed` flag (a "Closed" box in
+  its panel). A closed valve is the same 1e8 m per m³/s resistance as a
+  closed pump, whatever its K. A flow set behind a closed valve is a
+  modeling error that names the valve. The project asks students to "shut
+  all lines but one", and the valve is where they will reach first.
+- **A pressurized tank shows its pressure** on the diagram, since the
+  delivery pressure is a project specification.
+- **Scenarios inside an opened file** go through `loadDesign` too, so an
+  old file's scenarios pick up newer settings at their defaults.
+- **`project/` is in `.gitignore`.** It holds the handout draft, seven
+  baseline cases, their answer keys and design files, and the script that
+  generates them from the solver (`project/make_cases.mjs`; see
+  `project/README.md`). It must never be committed: the repo is public and
+  the keys are in there.
+- **Checked without a browser.** Pointer gestures (click, shift-click,
+  group drag, box select, drawing a pipe) and every chart's hover readout
+  were run under Node with made-up events. Still not clicked through by a
+  person: the tour's placement on screen and PNG export.

@@ -9,6 +9,7 @@
 
 import { pumpHead, pumpNpshr, pumpEfficiency } from "../solver/hydraulics.js";
 import { pumpSpec } from "../solver/design.js";
+import { plotButtons } from "./export.js";
 import { h, fix, niceTicks } from "./util.js";
 
 const W = 560, LEFT = 50, RIGHT = 18;
@@ -42,6 +43,14 @@ export function pumpPlot(pump, r) {
   const npshrPts = qs.map((qq) => [qq * 1000, pumpNpshr(link, qq)]);
   const etaPts = qs.map((qq) => [qq * 1000, pumpEfficiency(link, qq)]);
   const demandPts = curve ? curve.Q.map((qq, i) => [qq * 1000, curve.demand[i]]) : [];
+  const alone = r.curveAlone;
+  const alonePts = alone ? alone.Q.map((qq, i) => [qq * 1000, alone.demand[i]]) : [];
+  // The head curve at a few other speeds, for reading off what a drive would do.
+  const ghosts = [1, 0.9, 0.8, 0.7].filter((sp) => Math.abs(sp - pump.speed) > 0.02).map((sp) => {
+    const at = { ...link, speed: sp };
+    const qLabel = 0.3 * sp * Math.sqrt(spec.h0 / spec.a);
+    return { sp, pts: qs.map((qq) => [qq * 1000, pumpHead(at, qq)]), label: [qLabel * 1000, pumpHead(at, qLabel)] };
+  });
   const npshaPts = curve ? curve.Q.map((qq, i) => [qq * 1000, curve.npsha[i]]) : [];
 
   const lift = demandPts.length ? demandPts[0][1] : 0;
@@ -83,6 +92,9 @@ export function pumpPlot(pump, r) {
 
   const dim = r.on ? "" : " dim";
   s += `<g clip-path="url(#${uid}a)">
+      ${ghosts.map((gh) => `<path class="series pump ghost" d="${path(gh.pts, Y1)}"/>
+        <text class="tick ghost-label" x="${X(gh.label[0]) + 4}" y="${Y1(gh.label[1]) - 4}">${Math.round(gh.sp * 100)}% speed</text>`).join("")}
+      <path class="series network alone" d="${path(alonePts, Y1)}"/>
       <path class="series network" d="${path(demandPts, Y1)}"/>
       <path class="series pump${dim}" d="${path(headPts, Y1)}"/></g>
     <g clip-path="url(#${uid}b)">
@@ -91,6 +103,11 @@ export function pumpPlot(pump, r) {
     <g clip-path="url(#${uid}c)">
       <path class="series pump${dim}" d="${path(etaPts, Y3)}"/></g>`;
 
+  // The best-efficiency point, on the head curve and on the efficiency curve.
+  if (r.bep * 1000 <= xAxis.max) {
+    const bx = X(r.bep * 1000), diamond = (cy) => `<path class="bep" d="M${bx},${cy - 6} l5,6 l-5,6 l-5,-6 Z"/>`;
+    s += diamond(Y1(pumpHead(link, r.bep))) + diamond(Y3(Math.min(pumpEfficiency(link, r.bep), y3.max)));
+  }
   if (r.on) {
     const qx = X(r.Q * 1000);
     s += `<line class="opline" x1="${qx}" x2="${qx}" y1="${TOP1}" y2="${TOP3 + H3}"/>
@@ -124,6 +141,7 @@ export function pumpPlot(pump, r) {
     tip.innerHTML = `<div class="tip-q">Q = ${fix(qL, 2)} L/s</div>` +
       row("pump", "pump head", qSI <= qMaxSI ? pumpHead(link, qSI) : null) +
       row("network", "head demanded", curve ? interp(curve.Q, curve.demand, qSI) : null) +
+      row("network", "… with the other pumps off", alone ? interp(alone.Q, alone.demand, qSI) : null) +
       row("pump", "NPSH required", qSI <= qMaxSI ? pumpNpshr(link, qSI) : null) +
       row("network", "NPSH available", curve ? interp(curve.Q, curve.npsha, qSI) : null) +
       row("pump", "efficiency η", qSI <= qMaxSI ? pumpEfficiency(link, qSI) : null, "", 3);
@@ -138,8 +156,11 @@ export function pumpPlot(pump, r) {
   const legend = h("div", { class: "legend" },
     h("span", {}, h("i", { class: "sw pump" }), "this pump: head curve, NPSH required, efficiency"),
     h("span", {}, h("i", { class: "sw network" }), "the network: flow curve, NPSH available"),
+    alone ? h("span", {}, h("i", { class: "sw network dashed" }), "flow curve with the other pumps off") : null,
+    h("span", {}, h("i", { class: "sw pump faint" }), "head curve at other speeds"),
+    h("span", {}, h("i", { class: "sw bep" }), "best-efficiency point"),
     r.on ? h("span", {}, h("i", { class: "sw op" }), "operating point") : null);
   const missing = curve ? null : h("p", { class: "help" },
     "No flow curve is drawn for this pump: with the pump taken out, part of the network has no tank to set its head.");
-  return h("div", { class: "plot-wrap" }, legend, h("div", { class: "plot-box" }, svg, tip), missing);
+  return h("div", { class: "plot-wrap" }, legend, h("div", { class: "plot-box" }, svg, tip), missing, plotButtons(svg, `${pump.name} plot`));
 }

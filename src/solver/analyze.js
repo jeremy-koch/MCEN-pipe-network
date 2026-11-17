@@ -7,7 +7,9 @@
 //     fluid, patm,
 //     pipes:   { pipeId: { Q, V, Re, f, hMajor, hMinor, ... } },
 //     comps:   { compId: { H, p, ... } },
-//     totals:  { power, purchase, kWhPerYear, lifetimeCost },
+//     totals:  { power, kWhPerYear, costPerYear, lifetimeCost,
+//                purchase, drives, driveCost, pipeCost, pipeLength },
+//     lowP:    [compId]          places where the pressure is below vapor pressure
 //   }
 //
 // The app reports numbers; it does not judge the design. Errors are only
@@ -17,7 +19,7 @@
 import { G } from "./tables.js";
 import { water, pipeState, pipeArea, pumpHead, pumpRunout, pumpNpshr, pumpEfficiency, pumpShaftPower, pumpBepFlow } from "./hydraulics.js";
 import { solveNetwork } from "./network.js";
-import { pumpSpec, pipeRoughness, pipeKTotal, PORTS } from "./design.js";
+import { pumpSpec, pipeRoughness, pipeKTotal, pumpHasDrive, pipePrice, PORTS } from "./design.js";
 
 // Flows smaller than this [m^3/s] are reported as "no flow" (0.002 L/s).
 // It sits just above what leaks through a closed link in the solver.
@@ -165,7 +167,7 @@ function buildNetwork(design, fluid, errors, notes) {
       links.push({ id: c.id, kind: "pump", from: `${c.id}:in`, to: `${c.id}:out`, name: c.name,
         h0: spec.h0, a: spec.a, n0: spec.n0, n1: spec.n1, eta: spec.eta, ideal: !!c.ideal, speed: c.speed, on: !!c.on });
     } else {
-      links.push({ id: c.id, kind: "valve", from: `${c.id}:a`, to: `${c.id}:b`, name: c.name, K: c.K, D: c.D });
+      links.push({ id: c.id, kind: "valve", from: `${c.id}:a`, to: `${c.id}:b`, name: c.name, K: c.K, D: c.D, closed: !!c.closed });
     }
   }
   return { nodes, links, fluid };
@@ -214,7 +216,7 @@ function checkTopology(design, net, errors) {
   // Two tanks at different heads joined by connections that have no loss at
   // all (zero-length pipes without fittings, valves with K = 0): the flow
   // between them would be infinite.
-  const lossless = (l) => (l.kind === "pipe" && l.L === 0 && l.K === 0) || (l.kind === "valve" && l.K === 0);
+  const lossless = (l) => (l.kind === "pipe" && l.L === 0 && l.K === 0) || (l.kind === "valve" && l.K === 0 && !l.closed);
   for (const group of sections(net, null, lossless)) {
     const tanks = group.map((id) => byId.get(id)).filter((n) => n.fixedHead !== null);
     const heads = tanks.map((n) => n.fixedHead);
@@ -272,7 +274,7 @@ export function pumpFlowCurve(net, pumpId, Qmax, headCap = Infinity, nPts = 41) 
 
 export function analyze(design, options = {}) {
   const wantCurves = options.curves !== false;
-  const result = { status: "empty", errors: [], notes: [], pipes: {}, comps: {}, totals: null };
+  const result = { status: "empty", errors: [], notes: [], pipes: {}, comps: {}, totals: null, lowP: [] };
   const { errors, notes } = result;
   if (!design.components.length && !design.pipes.length) return result;
 
@@ -321,6 +323,20 @@ export function analyze(design, options = {}) {
     result.status = "error";
     return result;
   }
+  // The same for a closed valve: a set flow with no way round it.
+  const shut = net.links.filter((l) => l.kind === "valve" && l.closed && Math.abs(sol.Q[l.id]) > 1e-5);
+  if (shut.length) {
+    const setAt = design.components.filter((c) => c.type === "junction" && c.Qin_Ls).map((c) => q(c.name));
+    for (const l of shut) {
+      errors.push({
+        text: `Valve ${q(l.name)} is closed, and the flow set at ${setAt.join(", ") || "a junction"} can only get through by passing it. ` +
+          "Open the valve, give that flow another path to a tank, or change the flow you set.",
+        ids: [l.id],
+      });
+    }
+    result.status = "error";
+    return result;
+  }
   result.status = "solved";
   result.iterations = sol.iterations;
 
@@ -355,6 +371,34 @@ export function analyze(design, options = {}) {
     }
   }
 
+  // ---- places where the water would boil ----
+  // The solver assumes liquid everywhere. Where the absolute static pressure
+  // in a pipe end falls below the vapor pressure that is no longer true, so
+  // we say so: one note per component, for the lowest pressure found there.
+  const lowest = new Map(); // compId -> { p, pipe }
+  for (const p of design.pipes) {
+    const r = result.pipes[p.id];
+    for (const [end, pEnd] of [[p.from, r.pFrom], [p.to, r.pTo]]) {
+      if (pEnd === null) continue;
+      const seen = lowest.get(end.comp);
+      if (!seen || pEnd < seen.p) lowest.set(end.comp, { p: pEnd, pipe: p });
+    }
+  }
+  result.lowP = [];
+  for (const [id, low] of lowest) {
+    const pAbs = low.p + patm;
+    if (pAbs >= fluid.pv) continue;
+    const c = comps.get(id);
+    result.lowP.push(id);
+    notes.push({
+      kind: "lowp",
+      text: `At ${c.type} ${q(c.name)} (z = ${fmt(c.z)} m) the absolute pressure in pipe ${q(low.pipe.name)} comes out as ${fmt(pAbs / 1000)} kPa, ` +
+        `below the vapor pressure of the water (${fmt(fluid.pv / 1000)} kPa). Water cannot stay liquid there, and the solver assumes it does, ` +
+        "so the numbers for this network are not physical as drawn. The elevation there, or the losses upstream of it, set that pressure.",
+      ids: [id],
+    });
+  }
+
   // ---- components ----
   let anyFlow = Object.values(result.pipes).some((r) => r.Q !== 0);
   const running = [];
@@ -371,10 +415,10 @@ export function analyze(design, options = {}) {
       }
     } else if (c.type === "valve") {
       let Q = sol.Q[c.id];
-      if (Math.abs(Q) < Q_ZERO) Q = 0;
+      if (c.closed || Math.abs(Q) < Q_ZERO) Q = 0;
       const V = Math.abs(Q) / pipeArea(c.D);
       const Ha = sol.H[`${c.id}:a`], Hb = sol.H[`${c.id}:b`];
-      result.comps[c.id] = { Q, V, hLoss: (c.K * V * V) / (2 * G), Ha, Hb, pa: pOf(Ha, c.z), pb: pOf(Hb, c.z) };
+      result.comps[c.id] = { Q, V, hLoss: (c.K * V * V) / (2 * G), Ha, Hb, pa: pOf(Ha, c.z), pb: pOf(Hb, c.z), closed: !!c.closed };
     } else if (c.type === "pump") {
       const link = net.links.find((l) => l.id === c.id);
       const spec = pumpSpec(c);
@@ -420,6 +464,13 @@ export function analyze(design, options = {}) {
           curve.Qmax = Qmax;
         }
         r.curve = curve;
+        // The same question with every other pump switched off, to show how
+        // much the other pumps move this pump's flow curve.
+        r.curveAlone = null;
+        if (curve && net.links.some((l) => l.kind === "pump" && l.id !== c.id && l.on)) {
+          const alone = { ...net, links: net.links.map((l) => (l.kind === "pump" && l.id !== c.id ? { ...l, on: false } : l)) };
+          r.curveAlone = pumpFlowCurve(alone, c.id, Qmax, 3 * shutoff, 21);
+        }
       }
     }
   }
@@ -432,12 +483,13 @@ export function analyze(design, options = {}) {
       notes.unshift({
         text: `Nothing is flowing. At zero flow, ${pumps}; the tank heads are ${tanks}. ` +
           "If the running pumps cannot overcome the static lift between the tanks, there is no flow: that takes more pump head " +
-          "(a different pump, a higher speed, pumps in series) or a smaller lift. Also check that there is a path from one tank to another.",
+          "(a different pump, a higher speed, pumps in series) or a smaller lift. Also check that there is a path from one tank to another that is not shut by a closed valve.",
         ids: running.map(({ c }) => c.id),
       });
     } else {
       notes.unshift({
-        text: `Nothing is flowing: no pump is running (a pump that is off passes no flow) and nothing else drives a flow. Tank heads: ${tanks}.`,
+        text: `Nothing is flowing: no pump is running (a pump that is off passes no flow) and nothing else drives a flow. Tank heads: ${tanks}.` +
+          (design.components.some((c) => c.type === "valve" && c.closed) ? " A closed valve passes no flow either." : ""),
         ids: [],
       });
     }
@@ -454,6 +506,10 @@ export function analyze(design, options = {}) {
     costPerYear: kWhPerYear * s.price_per_kWh,
     lifetimeCost: kWhPerYear * s.price_per_kWh * s.years,
     purchase: allPumps.reduce((sum, c) => sum + (Number(pumpSpec(c).price) || 0), 0),
+    drives: allPumps.filter(pumpHasDrive).length,
+    pipeCost: design.pipes.reduce((sum, p) => sum + pipePrice(p, s), 0),
+    pipeLength: design.pipes.reduce((sum, p) => sum + (Number(p.L) || 0), 0),
   };
+  result.totals.driveCost = result.totals.drives * (Number(s.vfd_price) || 0);
   return result;
 }

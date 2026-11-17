@@ -1,10 +1,13 @@
 // app.js -- starts the app and wires the toolbar, the palette and the
 // keyboard to the rest.
 
-import { S, onRender, changed, undo, redo, canUndo, canRedo, replaceDesign, loadAutosave, startWith, select } from "./state.js";
+import { S, onRender, changed, undo, redo, canUndo, canRedo, replaceDesign, loadAutosave, startWith, select, saveView } from "./state.js";
 import { newDesign, loadDesign } from "../solver/design.js";
 import { EXAMPLES, HIDDEN_EXAMPLES } from "../examples.js";
-import { initCanvas, renderCanvas, addAtClient, addAtCenter, deleteSelected, rotateSelected, zoomBy, fitView } from "./canvas.js";
+import { initCanvas, renderCanvas, addAtClient, addAtCenter, deleteSelected, rotateSelected, zoomBy, fitView,
+  copySelected, pasteClipboard, duplicateSelected, selectAll, diagramDrawing } from "./canvas.js";
+import { saveSvg, savePng, downloadBlob, fileName } from "./export.js";
+import { showHelp, maybeFirstTour } from "./help.js";
 import { initPanel, renderPanel } from "./panel.js";
 import { initResults, renderResults } from "./results.js";
 import { h } from "./util.js";
@@ -53,13 +56,7 @@ onRender((opts = {}) => {
 
 function download() {
   const text = JSON.stringify({ ...S.design, saved: new Date().toISOString() }, null, 2);
-  const name = (S.design.name || "design").trim().replace(/[^\w\- ]+/g, "").replace(/\s+/g, "-") || "design";
-  const url = URL.createObjectURL(new Blob([text], { type: "application/json" }));
-  const a = h("a", { href: url, download: `${name}.pipenet.json` });
-  document.body.append(a);
-  a.click();
-  a.remove();
-  setTimeout(() => URL.revokeObjectURL(url), 1000);
+  downloadBlob(new Blob([text], { type: "application/json" }), `${fileName(S.design.name)}.pipenet.json`);
 }
 
 async function openFile(file) {
@@ -123,6 +120,22 @@ function initToolbar() {
   $("btn-zoom-out").onclick = () => zoomBy(0.8);
   $("btn-fit").onclick = fitView;
 
+  $("btn-help").onclick = showHelp;
+  const pictures = $("export");
+  pictures.onchange = () => {
+    const kind = pictures.value;
+    pictures.value = "";
+    const d = diagramDrawing();
+    if (kind === "svg") saveSvg(d.html, d.cls, d.box, `${S.design.name} diagram`);
+    else if (kind === "png") savePng(d.html, d.cls, d.box, `${S.design.name} diagram`);
+  };
+
+  // How the solved flows are drawn on the diagram.
+  const color = $("opt-color"), width = $("opt-width"), animate = $("opt-animate");
+  color.value = S.show.color; width.checked = !!S.show.width; animate.checked = !!S.show.animate;
+  const apply = () => { S.show = { color: color.value, width: width.checked, animate: animate.checked }; saveView(); renderCanvas(); };
+  color.onchange = width.onchange = animate.onchange = apply;
+
   const menu = $("examples");
   for (const ex of EXAMPLES) menu.append(h("option", { value: ex.key }, ex.label));
   menu.onchange = () => {
@@ -153,6 +166,12 @@ function initKeyboard() {
       e.preventDefault(); redo();
     } else if (mod && e.key.toLowerCase() === "s") {
       e.preventDefault(); download();
+    } else if (mod && !typing && "cvda".includes(e.key.toLowerCase())) {
+      // copy, paste, duplicate, select all: on the canvas, not in a text box.
+      // If some text on the page is highlighted, Ctrl+C copies that as usual.
+      if (e.key.toLowerCase() === "c" && String(window.getSelection?.() || "")) return;
+      e.preventDefault();
+      ({ c: copySelected, v: pasteClipboard, d: duplicateSelected, a: selectAll })[e.key.toLowerCase()]();
     } else if (typing) {
       if (e.key === "Escape") document.activeElement.blur();
     } else if (e.key === "Delete" || e.key === "Backspace") {
@@ -209,6 +228,7 @@ function start() {
 
   changed(); // solve and draw
   fitView();
+  if (!example && !S.design.components.length) maybeFirstTour();
   window.addEventListener("resize", renderCanvas);
 }
 

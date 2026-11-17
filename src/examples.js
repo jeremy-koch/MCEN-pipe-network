@@ -117,6 +117,110 @@ export function threePumpStation({ K = 0.15, on = [true, true, true] } = {}) {
   return d;
 }
 
+// ---------------------------------------------------------------------------
+// The four worked examples of course notes 11.3, "Pipe flow examples"
+// (jeremy-koch.github.io/MCEN3021/modules/unit-7/pipe-examples.html).
+//
+// The notes take some loss coefficients and roughnesses from their own
+// table (11.1b), which differ from the toolbox table in tables.js: a
+// threaded elbow is K = 1.5, a flanged elbow 0.3, a threaded tee 0.9
+// (line flow) or 2.0 (branch flow). Those go in each pipe's custom K
+// (K_extra), and the roughness in its custom roughness, so the examples
+// use exactly the numbers in the notes. Fittings whose K agrees with the
+// table (sharp entrance 0.5, open gate valve 0.15, exit 1.0) are fittings.
+//
+// A free jet leaves with its velocity head. We draw it as a tank at the
+// jet's elevation, entered through an "exit" (K = 1): the head equation
+// is then the same as the notes' with alpha_2 = 1.
+// ---------------------------------------------------------------------------
+
+const custom = (eps_mm) => ({ material: "custom", eps_mm });
+
+// Example 1: 0.4 L/s to a tap. The flow is set at the gauge (point 1), and
+// the answer, p1 = 58.9 kPa in the notes, is the static pressure at the
+// start of the first pipe (the pipe table's "p in").
+export function notesExample1() {
+  const d = newDesign();
+  d.name = "Notes 11.3, example 1: inlet pressure for a set flow";
+  const tube = { D: 0.02, ...custom(0.0025) }; // drawn copper tubing
+  const j1 = addComponent(d, "junction", 120, 340, { z: 0, Qin_Ls: 0.4, name: "1 (gauge)" });
+  const j2 = addComponent(d, "junction", 420, 340, { z: 0, name: "elbow A" });
+  const j3 = addComponent(d, "junction", 420, 140, { z: 4, name: "elbow B" });
+  const jet = addComponent(d, "tank", 660, 140, { z: 4, name: "2 (free jet)" });
+  addPipe(d, j1.id, "a", j2.id, "a", { ...tube, L: 10, name: "L1", K_extra: 1.5 }); // threaded elbow
+  addPipe(d, j2.id, "a", j3.id, "a", { ...tube, L: 4, name: "L2", K_extra: 1.5 }); // threaded elbow
+  addPipe(d, j3.id, "a", jet.id, "a", {
+    ...tube, L: 3, name: "L3", fittings: [fit("gate_valve_open"), fit("exit")],
+  });
+  return d;
+}
+
+// Example 2: a water tower draining through 68 m of steel pipe to a free
+// jet 28 m below its free surface. Notes: Q = 8.7 L/s.
+export function notesExample2() {
+  const d = newDesign();
+  d.name = "Notes 11.3, example 2: water tower";
+  const pipe = { D: 0.05, ...custom(0.025) }; // structural steel
+  const tower = addComponent(d, "tank", 120, 100, { z: 28, name: "Tower" });
+  const j1 = addComponent(d, "junction", 120, 300, { z: 3, name: "elbow A" });
+  const j2 = addComponent(d, "junction", 420, 300, { z: 3, name: "elbow B" });
+  const j3 = addComponent(d, "junction", 420, 360, { z: 0, name: "elbow C" });
+  const jet = addComponent(d, "tank", 660, 360, { z: 0, name: "2 (free jet)" });
+  addPipe(d, tower.id, "a", j1.id, "a", { ...pipe, L: 20, name: "L1", fittings: [fit("entrance_sharp")], K_extra: 0.3 });
+  addPipe(d, j1.id, "a", j2.id, "a", { ...pipe, L: 30, name: "L2", K_extra: 0.3 });
+  addPipe(d, j2.id, "a", j3.id, "a", { ...pipe, L: 3, name: "L3", K_extra: 0.3 });
+  addPipe(d, j3.id, "a", jet.id, "a", { ...pipe, L: 15, name: "L4", fittings: [fit("exit")] });
+  return d;
+}
+
+// Example 3: 10 L/s splits between two cast-iron paths. The tee losses are
+// charged to each path, as in the notes. The flow is set at point 1; the
+// tank after point 2 only fixes the head. p1 - p2 is the difference of the
+// two junction pressures. Notes: QA = 6.2 L/s, QB = 3.8 L/s,
+// p1 - p2 = 64 kPa.
+export function notesExample3() {
+  const d = newDesign();
+  d.name = "Notes 11.3, example 3: parallel paths";
+  const pipe = { D: 0.05, ...custom(0.15) };
+  const j1 = addComponent(d, "junction", 220, 160, { z: 0, Qin_Ls: 10, name: "1" });
+  const j2 = addComponent(d, "junction", 560, 160, { z: 0, name: "2" });
+  // 10 m above the line, only so that every pressure on the diagram is
+  // above atmospheric; it does not change the split or p1 - p2.
+  const t = addComponent(d, "tank", 760, 160, { z: 10, name: "Downstream" });
+  addPipe(d, j1.id, "a", j2.id, "a", {
+    ...pipe, L: 20, name: "A", fittings: [fit("gate_valve_open")], K_extra: 2 * 0.9, // two tees, line flow
+  });
+  addPipe(d, j1.id, "a", j2.id, "a", {
+    ...pipe, L: 50, name: "B", K_extra: 2 * 2.0 + 2 * 1.5, // two tees, branch flow; two threaded elbows
+    mid: { x: 390, y: 320 },
+  });
+  addPipe(d, j2.id, "a", t.id, "a", { L: 0, D: 0.05, name: "outlet" });
+  return d;
+}
+
+// Example 4: the generic pump of notes 11.2, H = 30 m [1 - (Q / 25 L/s)^2],
+// lifting 12 m through 150 m of cast iron. The notes give no efficiency
+// or NPSH curve: the pump is ideal (100% efficient), and the NPSH numbers
+// are the custom-pump defaults. Notes: Q = 15.2 L/s, H_pump = 18.9 m.
+export function notesExample4() {
+  const d = newDesign();
+  d.name = "Notes 11.3, example 4: a pump curve";
+  const pipe = { D: 0.10, ...custom(0.15) };
+  const t1 = addComponent(d, "tank", 100, 340, { z: 0, name: "Lower" });
+  const p = addComponent(d, "pump", 300, 340, {
+    z: 0, model: "custom", ideal: true,
+    custom: { h0: 30, a: 30 / 0.025 ** 2, eta: 1, n0: 1.5, n1: 4e3, price: 0 },
+  });
+  const t2 = addComponent(d, "tank", 660, 120, { z: 12, name: "Upper" });
+  addPipe(d, t1.id, "a", p.id, "in", { ...pipe, L: 0, name: "entrance", fittings: [fit("entrance_sharp")] });
+  addPipe(d, p.id, "out", t2.id, "a", {
+    ...pipe, L: 150, name: "L1 + L2 + L3",
+    fittings: [fit("gate_valve_open"), fit("exit")], K_extra: 2 * 0.3, // two flanged elbows
+    mid: { x: 300, y: 120 },
+  });
+  return d;
+}
+
 export const byType = (d, type) => d.components.filter((c) => c.type === type);
 export const pipeNamed = (d, name) => d.pipes.find((p) => p.name === name);
 
@@ -130,5 +234,9 @@ export const EXAMPLES = [
   { key: "lift", label: "Simple lift (one pump)", make: () => simpleLift() },
   { key: "lift-parallel", label: "Simple lift, two pumps in parallel", make: () => simpleLift({ arrangement: "parallel" }) },
   { key: "lift-series", label: "Simple lift, two pumps in series", make: () => simpleLift({ arrangement: "series" }) },
+  { key: "notes1", label: "Notes 11.3, ex. 1: inlet pressure", make: () => notesExample1() },
+  { key: "notes2", label: "Notes 11.3, ex. 2: water tower", make: () => notesExample2() },
+  { key: "notes3", label: "Notes 11.3, ex. 3: parallel paths", make: () => notesExample3() },
+  { key: "notes4", label: "Notes 11.3, ex. 4: a pump curve", make: () => notesExample4() },
 ];
 export const HIDDEN_EXAMPLES = { station: () => threePumpStation({ K: 20 }) };

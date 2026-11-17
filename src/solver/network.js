@@ -49,7 +49,7 @@ const Q_BACK = 2e-6; // m^3/s
 
 // d(headDrop)/dQ by a centered difference.
 function slope(link, Q, fluid) {
-  if (link.kind === "pump" && link.closed) return R_CLOSED;
+  if (link.closed) return R_CLOSED; // a pump that is not passing flow, or a closed valve
   const dq = 1e-6 * Math.max(Math.abs(Q), 1e-4);
   const d = (headDrop(link, Q + dq, fluid) - headDrop(link, Q - dq, fluid)) / (2 * dq);
   return Math.max(d, MIN_SLOPE);
@@ -60,6 +60,7 @@ function initialFlow(link) {
   if (link.kind === "pump") {
     return link.closed ? 0 : 0.5 * link.speed * Math.sqrt(link.h0 / link.a);
   }
+  if (link.closed) return 0;
   return 0.25 * Math.PI * link.D * link.D * 0.5; // 0.5 m/s
 }
 
@@ -104,7 +105,7 @@ function newton(nodes, links, fluid, topo, H, Q) {
     for (let k = 0; k < nL; k++) {
       if (from[k] === to[k]) continue;
       const r = headDrop(links[k], Qt[k], fluid) - (Ht[from[k]] - Ht[to[k]]);
-      const closed = links[k].kind === "pump" && links[k].closed;
+      const closed = !!links[k].closed;
       // A closed link is judged by the leak-flow error; others by head.
       if (closed) {
         merit += ((1e4 * r) / R_CLOSED) ** 2;

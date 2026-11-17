@@ -50,7 +50,7 @@ function randomDesign(seed) {
       addPipe(d, a.id, "a", p.id, "in", pipeProps());
       addPipe(d, p.id, "out", b.id, "a", pipeProps());
     } else {
-      const v = addComponent(d, "valve", 0, 0, { K: r() < 0.2 ? 0 : 50 * r(), D: pick([0.05, 0.1, 0.2]) });
+      const v = addComponent(d, "valve", 0, 0, { K: r() < 0.2 ? 0 : 50 * r(), D: pick([0.05, 0.1, 0.2]), closed: r() < 0.1 });
       addPipe(d, a.id, "a", v.id, "a", pipeProps());
       addPipe(d, v.id, "b", b.id, "a", pipeProps());
     }

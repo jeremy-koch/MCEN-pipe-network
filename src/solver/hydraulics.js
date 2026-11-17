@@ -180,6 +180,7 @@ export function headDrop(link, Q, fluid) {
     case "pipe":
       return Math.sign(Q) * pipeState(link, Q, fluid).hLoss;
     case "valve": {
+      if (link.closed) return R_CLOSED * Q; // shut: the same large resistance as a closed pump
       const V = Q / pipeArea(link.D);
       return (link.K * V * Math.abs(V)) / (2 * G);
     }

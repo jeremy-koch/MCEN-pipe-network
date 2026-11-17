@@ -14,18 +14,34 @@ python3 -m http.server 8000
 
 and then visit `http://localhost:8000`.
 
-The rest is hopefully discoverable, but briefly: drag a component from the left onto the canvas; drag from one port (a small circle) to another to make a pipe; click anything to edit it on the right. The network is solved after every change, so there is no Solve button. The tabs under the canvas hold the messages, a plot for each pump, the energy cost, the tables, and saved scenarios for side-by-side comparison.
+The rest is hopefully discoverable (and there is a Help button with a short tour and a glossary), but briefly: drag a component from the left onto the canvas; drag from one port (a small circle) to another to make a pipe; click anything to edit it on the right. The network is solved after every change, so there is no Solve button.
+
+The tabs under the canvas are where the reading happens:
+
+- **Messages** says what is missing when the network cannot be solved, and notes things worth knowing when it can (laminar pipes, a pump past the end of its curve, a spot where the pressure has dropped below the vapor pressure).
+- **Pumps** has a plot for each pump: its head curve against the flow curve, NPSH required against available, and efficiency, with the best-efficiency point marked. Faint curves show the head at other speeds, and a dashed flow curve shows what this pump would see with the other pumps off.
+- **Where the power goes** is an energy balance on the whole network: shaft power in; pump losses, pipe friction, fittings, valves and lift out, each in kW, percent and dollars per year.
+- **Costs** has the energy cost and, beside it, the purchase prices of pumps, drives and pipe. It does not compute a payback... that comparison is the student's.
+- **Sweep** varies any one input (a valve's K, all the valves together, a speed ratio, a diameter...) and plots any one output against it. Probably the most useful design tool in the app.
+- **Grade line** plots the energy and hydraulic grade lines along a path between two tanks or junctions. Select something on the canvas and the path goes through it.
+- **Pipes** and **Heads and pressures** are the tables. Click a pipe and its head equation is written out with the numbers put in, so it can be checked by hand; under that is a Moody chart with a dot for every pipe.
+- **Scenarios** are saved copies of the design, compared side by side with the differences marked, the changed inputs listed in words, and an energy cost weighted by the share of the time spent in each.
+
+On the canvas, pipe width shows flow rate, color can show speed or pressure, and moving dashes show direction (all three can be switched off, bottom left). Shift+click or Shift+drag selects several things; Ctrl/Cmd+D duplicates them, which makes short work of three identical pump lines. Every plot and the diagram can be saved as SVG or PNG, and every table as CSV, for reports.
 
 "Download design" writes one `.pipenet.json` file — that is what students submit, and "Open design" (or dropping the file on the page) reads it back. The app also autosaves to the browser, so a reload picks up where we left off.
 
 A pipe of length zero with no fittings is a plain connection: no loss at all. That is how we put a valve directly after a pump.
+
+To shut a line, tick "Closed" on its valve or untick "Running" on its pump; either one stops the flow in that line.
 
 ## How it is put together
 
 There is no build step and there are no dependencies. Everything is plain JavaScript modules.
 
 - `src/solver/` is the physics, and knows nothing about the page. `hydraulics.js` has the water properties, the friction factor and the pump curves; `network.js` is the network solver; `analyze.js` takes a design, checks it, solves it, and produces every number the app shows; `design.js` describes the design file; `tables.js` holds the roughness, fitting and pump tables.
-- `src/ui/` is the page: `canvas.js` (the drawing and the mouse), `panel.js` (properties), `results.js` (the tabs), `pumpplot.js` (the pump plot), `state.js` (undo, autosave), `app.js` (the wiring).
+- `src/solver/insight.js` is also physics with no page: the grade line along a path, the power balance, the list of differences between two designs, and the parameter sweep.
+- `src/ui/` is the page: `canvas.js` (the drawing and the mouse), `panel.js` (properties), `results.js` and `insight-tabs.js` (the tabs), `pumpplot.js` (the pump plot), `chart.js` (the line chart the other plots share), `export.js` (pictures and CSV), `help.js` (glossary, Help window, tour), `state.js` (undo, autosave), `app.js` (the wiring).
 - `src/examples.js` builds the example systems. The tests use the same ones.
 - `reference/` holds the referee: `pipeflow.py` is a copy of the course toolbox, and `make_referee.py` runs it to write `referee.json`.
 
@@ -37,7 +53,7 @@ The solver uses the same formulation as EPANET (just giving you some vocabulary 
 npm test          # or:  node --test
 ```
 
-This needs Node 20 or newer and nothing else. There are three groups. `referee.test.js` checks the JavaScript against the Python toolbox on the systems in `CLAUDE.md` (gravity drain, parallel pipes, simple lift, three-pump station); the two must agree to 0.5%, and in practice they agree to five or six digits. `messages.test.js` checks that every unsolvable network produces a message naming the component. `random.test.js` solves a few hundred random networks and checks what must be true of any right answer: flow is conserved at every junction and each pipe's loss matches the head difference across it.
+This needs Node 20 or newer and nothing else. There are four groups. `referee.test.js` checks the JavaScript against the Python toolbox on the systems in `CLAUDE.md` (gravity drain, parallel pipes, simple lift, three-pump station); the two must agree to 0.5%, and in practice they agree to five or six digits. `messages.test.js` checks that every unsolvable network produces a message naming the component. `insight.test.js` checks the grade line, the power balance (what goes in must come out), the sweep (all three valves together reach 60 L/s at K = 23.3, the referee's number), the low-pressure note, and that an older design file still opens. `random.test.js` solves a few hundred random networks and checks what must be true of any right answer: flow is conserved at every junction and each pipe's loss matches the head difference across it.
 
 To regenerate the referee numbers after changing `reference/pipeflow.py` (needs numpy and scipy):
 

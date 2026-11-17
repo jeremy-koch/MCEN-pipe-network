@@ -5,8 +5,8 @@
 // Networks are small, so this is fast, and there is no second copy of the
 // design to keep in step.
 
-import { S, changed, select, render } from "./state.js";
-import { addComponent, addPipe, PORTS, pumpSpec } from "../solver/design.js";
+import { S, changed, select, render, selectedIds, kindOf } from "./state.js";
+import { addComponent, addPipe, addLabel, PORTS, pumpSpec } from "../solver/design.js";
 import { esc, fmt, fix } from "./util.js";
 
 const GRID = 10;
@@ -91,14 +91,45 @@ function toWorld(clientX, clientY) {
 // Drawing
 // ---------------------------------------------------------------------------
 
-function isSel(kind, id) { return S.sel && S.sel.kind === kind && S.sel.id === id; }
+function isSel(kind, id) { return !!S.sel && (S.sel.id === id || S.also.includes(id)); }
+
+// How the solved flows are drawn on the pipes: width for flow rate, color
+// for speed or pressure, and moving dashes. Worked out once per redraw.
+let enc = null;
+function encoding() {
+  if (S.result.status !== "solved") return null;
+  const rs = S.design.pipes.map((p) => S.result.pipes[p.id]).filter(Boolean);
+  const out = { qMax: Math.max(0, ...rs.map((r) => Math.abs(r.Q))), vMax: Math.max(0, ...rs.map((r) => r.V)), value: null, lo: 0, hi: 0, label: "" };
+  if (S.show.color === "velocity") {
+    out.value = (r) => r.V; out.label = "speed V [m/s]";
+  } else if (S.show.color === "pressure") {
+    // the mean of the static pressures at the two ends, where they are known
+    out.value = (r) => { const ps = [r.pFrom, r.pTo].filter((v) => v !== null); return ps.length ? ps.reduce((a, b) => a + b, 0) / ps.length / 1000 : null; };
+    out.label = "gauge pressure [kPa]";
+  }
+  if (out.value) {
+    const vals = rs.map(out.value).filter((v) => v !== null);
+    if (vals.length) { out.lo = Math.min(...vals); out.hi = Math.max(...vals); } else out.value = null;
+  }
+  return out;
+}
+
+// A color between light and dark blue for t from 0 to 1.
+const RAMP = [[176, 204, 230], [10, 48, 115]];
+function rampColor(t) {
+  const u = Math.min(1, Math.max(0, t));
+  return `rgb(${RAMP[0].map((a, i) => Math.round(a + (RAMP[1][i] - a) * u)).join(",")})`;
+}
 
 // The second line under a component's name: a result if there is one,
 // otherwise a key property.
 function compCaption(c) {
   const r = S.result.status === "solved" ? S.result.comps[c.id] : null;
   switch (c.type) {
-    case "tank": return r ? `H = ${fix(r.H, 2)} m` : `z = ${fmt(c.z)} m`;
+    case "tank": {
+      const p = c.p_kPa ? ` · ${fmt(c.p_kPa)} kPa` : ""; // a pressurized tank says so
+      return (r ? `H = ${fix(r.H, 2)} m` : `z = ${fmt(c.z)} m`) + p;
+    }
     case "junction": {
       const set = c.Qin_Ls ? (c.Qin_Ls > 0 ? `${fmt(c.Qin_Ls)} L/s in · ` : `${fmt(-c.Qin_Ls)} L/s out · `) : "";
       return set + (r ? `H = ${fix(r.H, 2)} m · ${fix(r.p / 1000, 1)} kPa` : `z = ${fmt(c.z)} m`);
@@ -108,13 +139,16 @@ function compCaption(c) {
       if (!r) return pumpSpec(c).name;
       return `${fix(r.Q * 1000, 2)} L/s · +${fix(r.head, 2)} m`;
     }
-    case "valve": return r ? `K = ${fmt(c.K)} · loss ${fix(r.hLoss, 2)} m` : `K = ${fmt(c.K)}`;
+    case "valve":
+      if (c.closed) return "closed";
+      return r ? `K = ${fmt(c.K)} · loss ${fix(r.hLoss, 2)} m` : `K = ${fmt(c.K)}`;
     default: return "";
   }
 }
 
 function drawComp(c, flagged) {
-  const cls = `comp ${c.type}${isSel("comp", c.id) ? " sel" : ""}${flagged.has(c.id) ? " flag" : ""}${c.type === "pump" && !c.on ? " off" : ""}`;
+  const lowP = (S.result.lowP || []).includes(c.id);
+  const cls = `comp ${c.type}${isSel("comp", c.id) ? " sel" : ""}${flagged.has(c.id) ? " flag" : ""}${lowP ? " lowp" : ""}${c.type === "pump" && !c.on ? " off" : ""}${c.type === "valve" && c.closed ? " shut" : ""}`;
   let body = "";
   let labelDy = 30;
   if (c.type === "tank") {
@@ -166,10 +200,24 @@ function drawPipe(p, flagged) {
   const mid = halfway(pts);
   const r = S.result.status === "solved" ? S.result.pipes[p.id] : null;
 
-  let arrow = "";
+  let arrow = "", style = "", dashes = "";
   if (r && r.Q !== 0) {
     const deg = (mid.angle * 180) / Math.PI + (r.Q < 0 ? 180 : 0);
     arrow = `<path class="arrow" transform="translate(${mid.x},${mid.y}) rotate(${deg})" d="M-7,-6 L7,0 L-7,6 Z"/>`;
+  }
+  if (r && enc) {
+    if (S.show.width && enc.qMax > 0) {
+      const frac = Math.abs(r.Q) / enc.qMax;
+      style += `stroke-width:${(direct ? 2 + 4 * frac : 3 + 7 * frac).toFixed(1)}px;`;
+    }
+    const v = enc.value && !sel && !flagged.has(p.id) ? enc.value(r) : null;
+    if (v !== null) style += `stroke:${rampColor(enc.hi > enc.lo ? (v - enc.lo) / (enc.hi - enc.lo) : 0.5)};`;
+    if (S.show.animate && r.Q !== 0) {
+      // Dashes that run the way the water does, faster where it is faster.
+      const way = r.Q < 0 ? [...pts].reverse() : pts;
+      const speed = 14 + 50 * (enc.vMax > 0 ? r.V / enc.vMax : 0); // pixels per second
+      dashes = `<path class="flowdash" style="animation-duration:${(16 / speed).toFixed(2)}s" d="M${way.map((q) => `${q.x},${q.y}`).join(" L")}"/>`;
+    }
   }
   // Label beside the pipe, on the upper side of the line.
   let label = "";
@@ -187,7 +235,51 @@ function drawPipe(p, flagged) {
   const handle = sel
     ? `<circle class="handle" data-handle="${p.id}" cx="${mid.x}" cy="${mid.y}" r="6"><title>Drag to bend this pipe. Double-click to straighten it.</title></circle>`
     : "";
-  return `<g class="${cls}" data-pipe="${p.id}"><path class="hitline" d="${d}"/><path class="line" d="${d}"/>${arrow}${label}${handle}</g>`;
+  return `<g class="${cls}" data-pipe="${p.id}"><path class="hitline" d="${d}"/><path class="line" style="${style}" d="${d}"/>${dashes}${arrow}${label}${handle}</g>`;
+}
+
+// A piece of text on the canvas. Line breaks in the text are kept.
+function drawLabel(t) {
+  const lines = String(t.text || "").split("\n");
+  const spans = lines.map((ln, i) => `<tspan x="0" dy="${i ? 15 : 0}">${esc(ln) || " "}</tspan>`).join("");
+  return `<g class="label${isSel("label", t.id) ? " sel" : ""}" data-label="${t.id}" transform="translate(${t.x},${t.y})">` +
+    `<text>${String(t.text || "").trim() ? spans : "(empty text)"}</text></g>`;
+}
+
+// Everything on the canvas, as SVG markup.
+function worldHtml(flagged) {
+  enc = encoding();
+  let html = "";
+  for (const p of S.design.pipes) html += drawPipe(p, flagged);
+  for (const c of S.design.components) html += drawComp(c, flagged);
+  for (const t of S.design.labels || []) html += drawLabel(t);
+  return html;
+}
+
+// The corners of everything drawn, with room for the names and captions.
+function bounds() {
+  const pts = S.design.components.map((c) => ({ x: c.x, y: c.y }))
+    .concat(S.design.pipes.filter((p) => p.mid).map((p) => p.mid));
+  for (const t of S.design.labels || []) {
+    const lines = String(t.text).split("\n");
+    pts.push({ x: t.x + 30, y: t.y }, { x: t.x + 7 * Math.max(...lines.map((ln) => ln.length)) - 60, y: t.y + 15 * lines.length - 70 });
+  }
+  if (!pts.length) return null;
+  return {
+    x0: Math.min(...pts.map((p) => p.x)) - 90, x1: Math.max(...pts.map((p) => p.x)) + 90,
+    y0: Math.min(...pts.map((p) => p.y)) - 70, y1: Math.max(...pts.map((p) => p.y)) + 90,
+  };
+}
+
+// The drawing on its own, for saving as a picture: nothing selected, no
+// grid, cropped to the network.
+export function diagramDrawing() {
+  const keep = [S.sel, S.also];
+  S.sel = null; S.also = [];
+  const html = worldHtml(new Set());
+  [S.sel, S.also] = keep;
+  const b = bounds() || { x0: 0, x1: 200, y0: 0, y1: 100 };
+  return { html, cls: "canvas", box: [b.x0, b.y0, b.x1 - b.x0, b.y1 - b.y0] };
 }
 
 export function renderCanvas() {
@@ -198,14 +290,26 @@ export function renderCanvas() {
       <circle cx="1" cy="1" r="1" class="griddot"/></pattern></defs>
     <g id="world" transform="translate(${v.x},${v.y}) scale(${v.k})">
     <rect x="-20000" y="-20000" width="40000" height="40000" fill="url(#grid)" class="bg"/>`;
-  for (const p of S.design.pipes) html += drawPipe(p, flagged);
-  for (const c of S.design.components) html += drawComp(c, flagged);
+  html += worldHtml(flagged);
   if (drag && drag.kind === "pipe" && drag.to) {
     html += `<path class="rubber" d="M${drag.from.x},${drag.from.y} L${drag.to.x},${drag.to.y}"/>`;
+  }
+  if (drag && drag.kind === "box" && drag.moved) {
+    const a = drag.from, b = drag.to;
+    html += `<rect class="rubber-box" x="${Math.min(a.x, b.x)}" y="${Math.min(a.y, b.y)}" width="${Math.abs(a.x - b.x)}" height="${Math.abs(a.y - b.y)}"/>`;
   }
   html += "</g>";
   svg.innerHTML = html;
   svg.classList.toggle("pipemode", S.pipeMode);
+
+  // The key for the pipe colors, when they mean something.
+  const key = document.getElementById("color-legend");
+  if (key) {
+    key.hidden = !(enc && enc.value);
+    if (!key.hidden) {
+      key.innerHTML = `${esc(enc.label)}: ${fix(enc.lo, 1)} <i style="background:linear-gradient(90deg, ${rampColor(0)}, ${rampColor(1)})"></i> ${fix(enc.hi, 1)}`;
+    }
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -216,8 +320,14 @@ export function addAtClient(type, clientX, clientY) {
   const r = svg.getBoundingClientRect();
   if (clientX < r.left || clientX > r.right || clientY < r.top || clientY > r.bottom) return false;
   const w = toWorld(clientX, clientY);
-  const c = addComponent(S.design, type, snap(w.x), snap(w.y));
-  S.sel = { kind: "comp", id: c.id };
+  if (type === "label") {
+    const t = addLabel(S.design, snap(w.x), snap(w.y));
+    S.sel = { kind: "label", id: t.id };
+  } else {
+    const c = addComponent(S.design, type, snap(w.x), snap(w.y));
+    S.sel = { kind: "comp", id: c.id };
+  }
+  S.also = [];
   changed();
   return true;
 }
@@ -231,16 +341,85 @@ export function addAtCenter(type) {
 }
 
 export function deleteSelected() {
-  if (!S.sel) return;
+  const ids = new Set(selectedIds());
+  if (!ids.size) return;
   const d = S.design;
-  if (S.sel.kind === "pipe") {
-    d.pipes = d.pipes.filter((p) => p.id !== S.sel.id);
-  } else {
-    d.components = d.components.filter((c) => c.id !== S.sel.id);
-    d.pipes = d.pipes.filter((p) => p.from.comp !== S.sel.id && p.to.comp !== S.sel.id);
-  }
-  S.sel = null;
+  d.components = d.components.filter((c) => !ids.has(c.id));
+  d.labels = (d.labels || []).filter((t) => !ids.has(t.id));
+  d.pipes = d.pipes.filter((p) => !ids.has(p.id) && !ids.has(p.from.comp) && !ids.has(p.to.comp));
+  S.sel = null; S.also = [];
   changed();
+}
+
+// --- copy, paste, duplicate ---------------------------------------------------
+
+// A copy of the selection: the selected components and text, every pipe
+// that runs between two selected components, and (as "lone") any selected
+// pipe whose ends were not both selected.
+function grab() {
+  const ids = new Set(selectedIds());
+  const d = S.design;
+  const inside = (p) => ids.has(p.from.comp) && ids.has(p.to.comp);
+  const data = {
+    components: d.components.filter((c) => ids.has(c.id)),
+    labels: (d.labels || []).filter((t) => ids.has(t.id)),
+    pipes: d.pipes.filter(inside),
+    lone: d.pipes.filter((p) => ids.has(p.id) && !inside(p)),
+  };
+  const n = data.components.length + data.labels.length + data.lone.length;
+  return n ? JSON.parse(JSON.stringify(data)) : null;
+}
+
+// A name for a copy: "Pump 1" -> the next free "Pump n"; "header" -> "header 2".
+function copyName(name) {
+  const used = new Set([...S.design.components, ...S.design.pipes].map((c) => c.name));
+  const m = /^(.*?)(\s*)(\d+)$/.exec(name);
+  const [base, gap] = m ? [m[1], m[2]] : [name, " "];
+  for (let n = 2; ; n++) if (!used.has(base + gap + n)) return base + gap + n;
+}
+
+// Put a grabbed selection onto the canvas, moved down and right by `shift`.
+function place(data, shift) {
+  const d = S.design;
+  const newId = new Map(), made = [];
+  for (const c of data.components) {
+    const { id, name, x, y, type, ...props } = JSON.parse(JSON.stringify(c));
+    const copy = addComponent(d, type, x + shift, y + shift, { ...props, name: copyName(name) });
+    newId.set(id, copy.id); made.push(copy.id);
+  }
+  for (const p of data.pipes) {
+    const { id, name, from, to, ...props } = JSON.parse(JSON.stringify(p));
+    if (props.mid) props.mid = { x: props.mid.x + shift, y: props.mid.y + shift };
+    made.push(addPipe(d, newId.get(from.comp), from.port, newId.get(to.comp), to.port, { ...props, name: copyName(name) }).id);
+  }
+  // A pipe copied on its own becomes a second pipe between the same two
+  // ports, bent away from the first so that both can be seen.
+  for (const p of data.lone) {
+    const { id, name, from, to, ...props } = JSON.parse(JSON.stringify(p));
+    const a = compById(from.comp), b = compById(to.comp);
+    if (!a || !b) continue;
+    const mid = props.mid || { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
+    props.mid = { x: snap(mid.x), y: snap(mid.y + shift) };
+    made.push(addPipe(d, from.comp, from.port, to.comp, to.port, { ...props, name: copyName(name) }).id);
+  }
+  for (const t of data.labels) made.push(addLabel(d, t.x + shift, t.y + shift, t.text).id);
+  if (!made.length) return;
+  S.sel = { kind: kindOf(made[0]), id: made[0] };
+  S.also = made.slice(1);
+  changed();
+}
+
+let clip = null, pasted = 0;
+export function copySelected() { const data = grab(); if (data) { clip = data; pasted = 0; } }
+export function pasteClipboard() { if (clip) place(clip, 40 * ++pasted); }
+export function duplicateSelected() { const data = grab(); if (data) place(data, 40); }
+
+export function selectAll() {
+  const ids = [...S.design.components, ...(S.design.labels || []), ...S.design.pipes].map((c) => c.id);
+  if (!ids.length) return;
+  S.sel = { kind: kindOf(ids[0]), id: ids[0] };
+  S.also = ids.slice(1);
+  render();
 }
 
 export function rotateSelected() {
@@ -263,11 +442,9 @@ export function zoomBy(factor, cx = null, cy = null) {
 // Zoom and pan so the whole network is in view.
 export function fitView() {
   const r = svg.getBoundingClientRect();
-  const pts = S.design.components.map((c) => ({ x: c.x, y: c.y }))
-    .concat(S.design.pipes.filter((p) => p.mid).map((p) => p.mid));
-  if (!pts.length || !r.width) { S.view = { x: 0, y: 0, k: 1 }; renderCanvas(); return; }
-  const x0 = Math.min(...pts.map((p) => p.x)) - 90, x1 = Math.max(...pts.map((p) => p.x)) + 90;
-  const y0 = Math.min(...pts.map((p) => p.y)) - 70, y1 = Math.max(...pts.map((p) => p.y)) + 90;
+  const b = bounds();
+  if (!b || !r.width) { S.view = { x: 0, y: 0, k: 1 }; renderCanvas(); return; }
+  const { x0, x1, y0, y1 } = b;
   const k = Math.min(1.25, r.width / (x1 - x0), r.height / (y1 - y0));
   S.view = { k, x: (r.width - k * (x0 + x1)) / 2, y: (r.height - k * (y0 + y1)) / 2 };
   renderCanvas();
@@ -298,6 +475,7 @@ function onDown(e) {
   const portEl = t.closest("[data-port]");
   const compEl = t.closest("[data-comp]");
   const pipeEl = t.closest("[data-pipe]");
+  const labelEl = t.closest("[data-label]");
 
   if (handleEl) {
     drag = { kind: "bend", id: handleEl.dataset.handle, ...start };
@@ -307,13 +485,19 @@ function onDown(e) {
     const port = portEl ? portEl.dataset.port : near.port;
     const from = portEl ? { x: c.x + Number(portEl.getAttribute("cx")), y: c.y + Number(portEl.getAttribute("cy")) } : near;
     drag = { kind: "pipe", comp: c.id, port, from: { x: from.x, y: from.y }, to: null, ...start };
-  } else if (compEl) {
-    const c = compById(compEl.dataset.comp);
-    drag = { kind: "move", id: c.id, dx: w.x - c.x, dy: w.y - c.y, ...start };
-    if (!isSel("comp", c.id)) select({ kind: "comp", id: c.id });
-  } else if (pipeEl) {
-    drag = { kind: "none", ...start };
-    if (!isSel("pipe", pipeEl.dataset.pipe)) select({ kind: "pipe", id: pipeEl.dataset.pipe });
+  } else if (compEl || labelEl || pipeEl) {
+    const pick = compEl ? { kind: "comp", id: compEl.dataset.comp }
+      : labelEl ? { kind: "label", id: labelEl.dataset.label } : { kind: "pipe", id: pipeEl.dataset.pipe };
+    if (e.shiftKey) {
+      select(pick, true); // add it to, or take it out of, the selection
+      drag = { kind: "none", ...start };
+    } else {
+      if (!isSel(pick.kind, pick.id)) select(pick);
+      // Dragging moves everything selected. A pipe on its own does not move.
+      drag = pick.kind === "pipe" ? { kind: "none", pick, ...start } : { kind: "move", pick, wx: w.x, wy: w.y, items: movable(), ...start };
+    }
+  } else if (e.shiftKey) {
+    drag = { kind: "box", from: w, to: w, ...start };
   } else {
     drag = { kind: "pan", vx: S.view.x, vy: S.view.y, ...start };
   }
@@ -322,14 +506,32 @@ function onDown(e) {
   if (document.activeElement && document.activeElement !== document.body) document.activeElement.blur();
 }
 
+// What a drag moves: the selected components and text, and the bend of any
+// pipe that is selected or has both ends selected. Each entry remembers
+// where its object started.
+function movable() {
+  const ids = new Set(selectedIds());
+  const items = [];
+  const hold = (obj) => items.push({ obj, x0: obj.x, y0: obj.y });
+  for (const c of S.design.components) if (ids.has(c.id)) hold(c);
+  for (const t of S.design.labels || []) if (ids.has(t.id)) hold(t);
+  for (const p of S.design.pipes) {
+    if (p.mid && ids.size > 1 && (ids.has(p.id) || (ids.has(p.from.comp) && ids.has(p.to.comp)))) hold(p.mid);
+  }
+  return items;
+}
+
 function onMove(e) {
   if (!drag) return;
   if (!drag.moved && Math.hypot(e.clientX - drag.sx, e.clientY - drag.sy) < 4) return;
   drag.moved = true;
   const w = toWorld(e.clientX, e.clientY);
   if (drag.kind === "move") {
-    const c = compById(drag.id);
-    c.x = snap(w.x - drag.dx); c.y = snap(w.y - drag.dy);
+    const dx = snap(w.x - drag.wx), dy = snap(w.y - drag.wy);
+    for (const it of drag.items) { it.obj.x = it.x0 + dx; it.obj.y = it.y0 + dy; }
+    renderCanvas();
+  } else if (drag.kind === "box") {
+    drag.to = w;
     renderCanvas();
   } else if (drag.kind === "bend") {
     const p = S.design.pipes.find((q) => q.id === drag.id);
@@ -378,10 +580,30 @@ function onUp(e) {
     if (d.moved) finishPipe(e, d);
     changed();
   } else if (d.kind === "move" || d.kind === "bend") {
-    if (d.moved) changed(); else renderCanvas();
+    if (d.moved) changed();
+    else if (d.pick && S.also.length) select(d.pick); // a plain click on one of several: keep just that one
+    else renderCanvas();
+  } else if (d.kind === "none" && d.pick && !d.moved && S.also.length) {
+    select(d.pick);
+  } else if (d.kind === "box") {
+    finishBox(d);
   } else if (d.kind === "pan" && !d.moved) {
     if (S.sel || S.pipeMode) { S.pipeMode = false; select(null); }
   }
+}
+
+// Select everything inside the box that was dragged out.
+function finishBox(d) {
+  const x0 = Math.min(d.from.x, d.to.x), x1 = Math.max(d.from.x, d.to.x);
+  const y0 = Math.min(d.from.y, d.to.y), y1 = Math.max(d.from.y, d.to.y);
+  const inBox = (p) => p.x >= x0 && p.x <= x1 && p.y >= y0 && p.y <= y1;
+  const comps = new Set(S.design.components.filter(inBox).map((c) => c.id));
+  const ids = [...comps, ...(S.design.labels || []).filter(inBox).map((t) => t.id),
+    ...S.design.pipes.filter((p) => comps.has(p.from.comp) && comps.has(p.to.comp)).map((p) => p.id)];
+  if (!d.moved || !ids.length) { select(null); return; }
+  S.sel = { kind: kindOf(ids[0]), id: ids[0] };
+  S.also = ids.slice(1);
+  render();
 }
 
 function onDblClick(e) {

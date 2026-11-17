@@ -20,6 +20,13 @@
       <span class="sep"></span>
       <button type="button" id="btn-undo" title="Undo (Ctrl/Cmd+Z)">Undo</button>
       <button type="button" id="btn-redo" title="Redo (Ctrl/Cmd+Shift+Z)">Redo</button>
+      <span class="sep"></span>
+      <select id="export" title="Save the drawing as a picture, for a report" aria-label="Save a picture">
+        <option value="">Save picture…</option>
+        <option value="svg">Diagram as SVG</option>
+        <option value="png">Diagram as PNG</option>
+      </select>
+      <button type="button" id="btn-help" title="How to use the app, and a glossary">Help</button>
     </div>
     <div class="status" id="status" role="status"></div>
     <input type="file" id="file-input" accept=".json,application/json" hidden>
@@ -43,6 +50,10 @@
         <svg viewBox="-26 -22 52 44"><path d="M-14,-9 V9 L0,0 Z M14,-9 V9 L0,0 Z M0,0 V-13 M-6,-13 H6" class="p-line"/></svg>
         Valve
       </button>
+      <button type="button" class="tile" data-type="label" title="Text: a note of your own on the drawing">
+        <svg viewBox="-26 -22 52 44"><path d="M-12,-11 H12 M0,-11 V12 M-5,12 H5" class="p-line" style="fill:none"/></svg>
+        Text
+      </button>
       <button type="button" class="tile" id="pipe-tool" title="Pipe: drag from a port (small circle) on one component to a port on another. Or click here, then drag from one component to another.">
         <svg viewBox="-26 -22 52 44"><path d="M-18,8 L18,-8" class="p-pipe"/><circle cx="-18" cy="8" r="4" class="p-port"/><circle cx="18" cy="-8" r="4" class="p-port"/></svg>
         Pipe
@@ -56,6 +67,18 @@
         <button type="button" id="btn-zoom-in" title="Zoom in">+</button>
         <button type="button" id="btn-zoom-out" title="Zoom out">−</button>
         <button type="button" id="btn-fit" title="Fit the whole network in view">Fit</button>
+      </div>
+      <div class="viewopts" id="viewopts">
+        <label>Color pipes by
+          <select id="opt-color">
+            <option value="none">nothing</option>
+            <option value="velocity">speed</option>
+            <option value="pressure">pressure</option>
+          </select>
+        </label>
+        <label><input type="checkbox" id="opt-width"> width shows flow rate</label>
+        <label><input type="checkbox" id="opt-animate"> moving dashes</label>
+        <span class="color-legend" id="color-legend" hidden></span>
       </div>
       <div class="pipe-banner" id="pipe-banner" hidden>Pipe tool: drag from one component to another. Esc to cancel.</div>
     </section>
