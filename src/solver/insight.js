@@ -164,7 +164,7 @@ export function gradeLine(design, result, from, to, via = null) {
 export function powerBudget(design, result) {
   if (result.status !== "solved") return null;
   const rhoG = result.fluid.rho * G;
-  const out = { shaft: 0, water: 0, pumpLoss: 0, major: 0, minor: 0, valves: 0, lift: 0, items: [] };
+  const out = { drive: 0, shaft: 0, water: 0, pumpLoss: 0, major: 0, minor: 0, valves: 0, lift: 0, items: [] };
   const into = new Map(); // tank or junction id -> net flow arriving by pipe
 
   for (const p of design.pipes) {
@@ -187,7 +187,8 @@ export function powerBudget(design, result) {
       if (W > 0) out.items.push({ id: c.id, name: c.name, kind: "valve", W });
     } else if (c.type === "pump" && r.on) {
       const water = rhoG * r.Q * r.head;
-      out.water += water; out.shaft += r.power;
+      out.water += water; out.shaft += r.power; out.drive += r.driveLoss || 0;
+      if (r.driveLoss > 0) out.items.push({ id: c.id, name: c.name, kind: "drive loss", W: r.driveLoss });
       if (r.power - water > 0) out.items.push({ id: c.id, name: c.name, kind: "pump loss", W: r.power - water });
     } else if (isNode(c)) {
       // Water arriving at a tank, or leaving at a junction with a set
@@ -211,7 +212,8 @@ const PROPS = {
   pump: [["speed", "speed ratio", ""], ["z", "elevation", "m"]],
   pipe: [["L", "length", "m"], ["D", "diameter", "m"]],
   settings: [["temperature_C", "water temperature", "°C"], ["patm_kPa", "atmospheric pressure", "kPa"],
-    ["price_per_kWh", "electricity price", "$/kWh"], ["hours_per_year", "running time", "h/yr"], ["years", "lifetime", "yr"]],
+    ["price_per_kWh", "electricity price", "$/kWh"], ["hours_per_year", "running time", "h/yr"], ["years", "lifetime", "yr"],
+    ["vfd_base", "drive price, base", "$"], ["vfd_per_kW", "drive price, per kW", "$/kW"], ["vfd_eta", "drive efficiency", ""], ["pipe_price", "pipe price", "$/m"]],
 };
 
 // The inputs that differ going from design a to design b, matched by name.
@@ -251,6 +253,7 @@ export function designDiff(a, b) {
           if (sx[k] !== sy[k]) out.push({ who: name, what: `custom curve ${k}`, from: show(sx[k]), to: show(sy[k]) });
         }
       }
+      if (!!x.vfd !== !!y.vfd) out.push({ who: name, what: "variable-frequency drive", from: x.vfd ? "yes" : "no", to: y.vfd ? "yes" : "no" });
       if (!!x.ideal !== !!y.ideal) out.push({ who: name, what: "ideal efficiency", from: x.ideal ? "yes" : "no", to: y.ideal ? "yes" : "no" });
     }
     if (x.type === "valve" && !!x.closed !== !!y.closed) out.push({ who: name, what: "state", from: x.closed ? "closed" : "open", to: y.closed ? "closed" : "open" });
@@ -279,14 +282,14 @@ export function sweepTargets(design) {
   const comp = (d, id) => d.components.find((c) => c.id === id);
   const one = (c, prop, label, unit, range) => out.push({
     key: `${c.id}:${prop}`, label: `${c.name}: ${label}`, unit, value: c[prop], range,
-    set: (d, v) => { const x = comp(d, c.id); if (x) x[prop] = v; },
+    set: (d, v) => { const x = comp(d, c.id); if (x) { x[prop] = v; if (prop === "speed") x.vfd = true; } },
   });
   const all = (type, prop, label, unit, range) => {
     const list = design.components.filter((c) => c.type === type);
     if (list.length < 2) return;
     out.push({
       key: `all:${type}:${prop}`, label: `All ${type}s together: ${label}`, unit, value: list[0][prop], range: range(list[0][prop]),
-      set: (d, v) => { for (const x of d.components) if (x.type === type) x[prop] = v; },
+      set: (d, v) => { for (const x of d.components) if (x.type === type) { x[prop] = v; if (prop === "speed") x.vfd = true; } },
     });
   };
   const around = (v, d) => [v - d, v + d];
@@ -350,6 +353,8 @@ export function sweepOutputs(design) {
       series: pumps.flatMap((c) => [
         { name: `${c.name}: available`, get: (r) => r.comps[c.id]?.npsha ?? null },
         { name: `${c.name}: required`, get: (r) => r.comps[c.id]?.npshr ?? null }]) });
+    out.push({ key: "drawn", label: "Power drawn (shaft power plus drive losses)", unit: "kW",
+      series: [...of(pumps, (x) => (x.drawn ?? x.power) / 1000), ...total("all pumps", (r) => r.totals.drawn / 1000)] });
     out.push({ key: "cost", label: "Energy cost per year", unit: "$", series: [{ name: "all pumps", get: (r) => r.totals.costPerYear }] });
   }
   if (pipes.length) {

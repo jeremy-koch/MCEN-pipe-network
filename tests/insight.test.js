@@ -1,13 +1,13 @@
 // insight.test.js -- the grade line, the power budget, the scenario
 // difference list, the parameter sweep, the low-pressure note, and the
-// design-file additions of schema 2.
+// design-file additions of schema 2 and 3.
 
 import test from "node:test";
 import assert from "node:assert/strict";
 
 import { analyze } from "../src/solver/analyze.js";
 import { gradeLine, powerBudget, designDiff, sweepTargets, sweepOutputs, runSweep } from "../src/solver/insight.js";
-import { newDesign, addComponent, addPipe, addLabel, loadDesign, SCHEMA } from "../src/solver/design.js";
+import { newDesign, addComponent, addPipe, addLabel, loadDesign, SCHEMA, DEFAULT_SETTINGS, drivePrice, pumpRatedPower_kW } from "../src/solver/design.js";
 import { gravityDrain, simpleLift, threePumpStation, byType, pipeNamed } from "../src/examples.js";
 
 const near = (a, b, tol, what) => assert.ok(Math.abs(a - b) <= tol, `${what}: ${a} vs ${b}`);
@@ -186,7 +186,47 @@ test("purchase prices: pumps, drives and pipe", () => {
   pumps[1].vfd = true; // a drive that happens to sit at rated speed
   t = analyze(d).totals;
   assert.equal(t.drives, 2);
-  assert.equal(t.driveCost, 2 * d.settings.vfd_price);
+  assert.equal(t.driveCost, drivePrice(pumps[0], d.settings) + drivePrice(pumps[1], d.settings));
+});
+
+test("drive price grows with the size of the pump", () => {
+  const s = newDesign().settings;
+  const elk = { type: "pump", model: "CV-80", speed: 1 };
+  // Elk at its best point: Q = sqrt(52/(3*3.5e4)) = 22.25 L/s, H = 34.67 m, eta = 0.74
+  const kW = (998.2 * 9.81 * Math.sqrt(52 / 1.05e5) * (2 / 3) * 52) / 0.74 / 1000;
+  assert.ok(Math.abs(pumpRatedPower_kW(elk) - kW) < 1e-9);
+  assert.ok(Math.abs(kW - 10.21) < 0.01);
+  assert.ok(Math.abs(drivePrice(elk, s) - (s.vfd_base + s.vfd_per_kW * kW)) < 1e-9);
+  const sizes = ["GN-25", "GN-40", "CV-50", "CV-80", "HS-120"].map((m) => drivePrice({ type: "pump", model: m }, s));
+  for (let i = 1; i < sizes.length; i++) assert.ok(sizes[i] > sizes[i - 1]);
+  // a custom pump is sized from its own curve
+  const custom = { type: "pump", model: "custom", custom: { h0: 52, a: 3.5e4, eta: 0.74, n0: 1, n1: 1, price: 0 } };
+  assert.ok(Math.abs(drivePrice(custom, s) - drivePrice(elk, s)) < 1e-9);
+});
+
+test("design file: a schema 2 file drops the flat drive price and ticks the drive on an off-speed pump", () => {
+  const old = JSON.parse(JSON.stringify(threePumpStation()));
+  old.schema = 2; old.settings.vfd_price = 4000;
+  delete old.settings.vfd_base; delete old.settings.vfd_per_kW;
+  const pumps = old.components.filter((c) => c.type === "pump");
+  for (const c of pumps) c.vfd = false;
+  pumps[0].speed = 0.9;
+  const opened = loadDesign(old);
+  assert.equal(opened.schema, SCHEMA);
+  assert.equal(opened.settings.vfd_price, undefined);
+  assert.equal(opened.settings.vfd_base, DEFAULT_SETTINGS.vfd_base);
+  const p = opened.components.filter((c) => c.type === "pump");
+  assert.equal(p[0].vfd, true);
+  assert.equal(p[1].vfd, false);
+});
+
+test("sweeping a speed ratio puts a drive on the pump", () => {
+  const d = threePumpStation({ K: 20 });
+  const target = sweepTargets(d).find((t) => t.key.startsWith("all:pump:speed"));
+  const copy = JSON.parse(JSON.stringify(d));
+  target.set(copy, 0.9);
+  assert.ok(copy.components.filter((c) => c.type === "pump").every((c) => c.vfd && c.speed === 0.9));
+  assert.ok(!d.components.some((c) => c.vfd)); // the design itself is not touched
 });
 
 test("pump plot: the flow curve with the other pumps off sits below the one with them on", () => {
@@ -202,7 +242,7 @@ test("pump plot: the flow curve with the other pumps off sits below the one with
   assert.equal(analyze(single).comps[byType(single, "pump")[0].id].curveAlone, null);
 });
 
-test("design file: schema 2 round trip, and a schema 1 file still opens", () => {
+test("design file: round trip, and a schema 1 file still opens", () => {
   const d = threePumpStation();
   d.author = "A. Student"; d.notes = "first try";
   addLabel(d, 10, 20, "pump room");
@@ -216,11 +256,35 @@ test("design file: schema 2 round trip, and a schema 1 file still opens", () => 
 
   const old = JSON.parse(JSON.stringify(threePumpStation()));
   old.schema = 1; delete old.labels; delete old.author; delete old.notes;
-  delete old.settings.vfd_price; delete old.settings.pipe_price;
+  delete old.settings.vfd_base; delete old.settings.vfd_per_kW; delete old.settings.pipe_price;
   for (const c of old.components) delete c.vfd;
   const opened = loadDesign(old);
   assert.deepEqual(opened.labels, []);
-  assert.equal(opened.settings.vfd_price, 4000);
+  assert.equal(opened.settings.vfd_base, DEFAULT_SETTINGS.vfd_base);
   assert.equal(analyze(opened).status, "solved");
   assert.ok(pipeNamed(opened, "header"));
+});
+
+test("drive efficiency: a pump with a drive draws shaft power / eta, and energy is billed on that", () => {
+  const d = threePumpStation({ K: 20 });
+  const plain = analyze(d).totals;
+  assert.equal(plain.drawn, plain.power); // no drives, no drive loss
+  const pumps = byType(d, "pump");
+  pumps[0].vfd = true; // a drive at rated speed: same flow, but it loses a little
+  const r = analyze(d);
+  const p0 = r.comps[pumps[0].id], p1 = r.comps[pumps[1].id];
+  near(r.totals.power, plain.power, 1e-9, "the drive does not change the shaft power");
+  near(p0.drawn, p0.power / d.settings.vfd_eta, 1e-9, "drawn by the pump with a drive");
+  assert.equal(p1.drawn, p1.power);
+  near(r.totals.kWhPerYear, (r.totals.drawn / 1000) * d.settings.hours_per_year, 1e-9, "energy is billed on power drawn");
+  assert.ok(r.totals.costPerYear > plain.costPerYear);
+  // and the energy balance still closes, with the drive loss as one more use
+  const b = powerBudget(d, r);
+  near(b.drive, p0.drawn - p0.power, 1e-9, "drive loss");
+  near(b.items.reduce((s, i) => s + i.W, 0), b.drive + b.pumpLoss + b.major + b.minor + b.valves, 1e-6 * b.shaft, "items");
+  // a drive efficiency that makes no sense is an error, but only when there is a drive
+  d.settings.vfd_eta = 1.2;
+  assert.equal(analyze(d).status, "error");
+  pumps[0].vfd = false;
+  assert.equal(analyze(d).status, "solved");
 });

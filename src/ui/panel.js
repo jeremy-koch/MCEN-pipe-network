@@ -3,7 +3,7 @@
 
 import { S, changed, findSelected } from "./state.js";
 import { ROUGHNESS, FITTINGS, PUMP_CATALOG } from "../solver/tables.js";
-import { pumpSpec, pipeKTotal, pipeRoughness, TYPE_LABEL } from "../solver/design.js";
+import { pumpSpec, pipeKTotal, pipeRoughness, TYPE_LABEL, drivePrice, pumpRatedPower_kW } from "../solver/design.js";
 import { water } from "../solver/hydraulics.js";
 import { deleteSelected, rotateSelected, duplicateSelected } from "./canvas.js";
 import { h, fmt, money } from "./util.js";
@@ -18,7 +18,7 @@ export function initPanel(el) { root = el; }
 function numberField(label, unit, obj, key, opts = {}) {
   const input = h("input", {
     type: "number", step: opts.step || "any", value: obj[key] ?? "",
-    min: opts.min, max: opts.max,
+    min: opts.min, max: opts.max, disabled: !!opts.disabled,
     oninput: () => {
       obj[key] = input.value.trim() === "" ? null : Number(input.value);
       changed(`${opts.group || ""}:${key}:${obj.id || ""}`, { keepPanel: true });
@@ -121,8 +121,15 @@ function pumpPanel(c) {
   const custom = c.model === "custom";
   const options = Object.entries(PUMP_CATALOG).map(([k, p]) => [k, p.name]).concat([["custom", "Custom curve…"]]);
   const info = h("div", { class: "readouts" });
+  const driveHint = h("span", { class: "hint" });
   const fillInfo = () => {
     const sp = pumpSpec(c), rr = Number(c.speed) || 0;
+    const st = S.design.settings, dp = drivePrice(c, st), kWr = pumpRatedPower_kW(c);
+    driveHint.innerHTML = `Adds ${money(dp)} to the purchase price: a drive for this pump's ${fmt(kWr)} kW rated power ` +
+      `(${money(st.vfd_base)} + ${money(st.vfd_per_kW)}/kW × ${fmt(kWr)} kW, installed). The drive passes on ${fmt(st.vfd_eta)} of the power it draws, ` +
+      `so the pump draws its shaft power / ${fmt(st.vfd_eta)}. Prices and efficiency are on the Costs tab. ` +
+      (c.vfd ? "The speed ratio below is the drive's setting." : "Tick it to set a speed ratio other than 1.");
+    const pumpPrice = Number(sp.price) || 0;
     info.replaceChildren(
       readout("Head curve", "H = h<sub>0</sub> − a Q²"),
       !custom ? readout("h<sub>0</sub> (shutoff head)", `${fmt(sp.h0)} m`) : null,
@@ -130,7 +137,10 @@ function pumpPanel(c) {
       !custom ? readout("Peak efficiency η<sub>max</sub>", fmt(sp.eta)) : null,
       !custom ? readout("NPSH required", `${fmt(sp.n0)} + ${fmt(sp.n1)} Q² m`) : null,
       !custom && sp.rpm ? readout("Rated speed", `${sp.rpm} rpm`) : null,
-      !custom ? readout("Price", money(sp.price)) : null,
+      !custom ? readout("Pump price", money(pumpPrice)) : null,
+      c.vfd ? readout("Drive price", money(dp)) : null,
+      c.vfd ? readout("Pump and drive", money(pumpPrice + dp)) : null,
+      readout("Rated power (at best efficiency)", `${fmt(kWr)} kW`),
       readout("Shutoff head at this speed", `${fmt(rr * rr * sp.h0)} m`),
       readout("Zero-head flow at this speed", `${fmt(rr * Math.sqrt(sp.h0 / sp.a) * 1000)} L/s`),
       readout("Best-efficiency flow at this speed", `${fmt(rr * Math.sqrt(sp.h0 / (3 * sp.a)) * 1000)} L/s`));
@@ -153,11 +163,17 @@ function pumpPanel(c) {
         numberField("NPSH required n<sub>1</sub>", "m/(m³/s)²", c.custom, "n1", opts),
         numberField("Price", "$", c.custom, "price", opts),
       ] : null,
-      numberField("Speed ratio", "", c, "speed", { ...opts, step: 0.05, min: 0, hint: "1 = rated speed. A variable-frequency drive changes this; the curve follows the affinity laws." }),
       h("label", { class: "check" },
-        h("input", { type: "checkbox", checked: !!c.vfd, onchange: (e) => { c.vfd = e.target.checked; changed(); } }),
-        "Variable-frequency drive",
-        h("span", { class: "hint" }, "Adds the price of a drive to the purchase prices. A pump at any speed ratio other than 1 is counted as having one, ticked or not.")),
+        h("input", {
+          type: "checkbox", checked: !!c.vfd,
+          onchange: (e) => { c.vfd = e.target.checked; if (!c.vfd) c.speed = 1; changed(); },
+        }),
+        "Variable-frequency drive", driveHint),
+      numberField("Speed ratio", "", c, "speed", {
+        ...opts, step: 0.05, min: 0, disabled: !c.vfd,
+        hint: c.vfd ? "1 = rated speed. The head curve follows the affinity laws: H(Q) → r² H(Q/r)."
+          : "Fixed at 1 (rated speed) without a drive.",
+      }),
       numberField("Elevation z", "m", c, "z", { hint: "of the pump centerline; it sets the NPSH available" }),
       h("label", { class: "check" },
         h("input", { type: "checkbox", checked: !!c.ideal, onchange: (e) => { c.ideal = e.target.checked; changed(); } }),

@@ -394,6 +394,23 @@ by tab. Decisions made, so they are not re-derived:
   generates them from the solver (`project/make_cases.mjs`; see
   `project/README.md`). It must never be committed: the repo is public and
   the keys are in there.
+- **Drives (2026-11-19, design file schema 3).** The "Variable-frequency
+  drive" box is the switch for the speed ratio: without it the field is
+  greyed out at 1, and unticking it puts the speed back to 1. A drive costs
+  `vfd_base + vfd_per_kW × P_rated` ($2,500 + $250/kW by default,
+  installed: the instructor chose to fold installation into the drive
+  price), with `P_rated = ρg Q_bep (2/3 h0)/η_max` at 20 °C, rated speed
+  (`drivePrice`, `pumpRatedPower_kW` in `design.js`). That's about $5,050
+  for an Elk. A drive has an efficiency `vfd_eta` (0.97): a pump with a
+  drive draws `power / vfd_eta` (`r.drawn`, `totals.drawn`), and energy
+  cost is billed on what is drawn. Shaft power (`r.power`,
+  `totals.power`) is unchanged and is still what the pump plot shows.
+  Motor losses are still not modeled. This
+  replaces schema 2's flat `vfd_price` ($4,000), which an old file drops on
+  opening; a pump saved off rated speed opens with its box ticked. Sweeping
+  a speed ratio ticks the box on the swept copy, so the cost is counted.
+  `pumpHasDrive` still counts any pump with speed ≠ 1, for designs built in
+  code.
 - **Checked without a browser.** Pointer gestures (click, shift-click,
   group drag, box select, drawing a pipe) and every chart's hover readout
   were run under Node with made-up events. Still not clicked through by a

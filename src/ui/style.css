@@ -140,6 +140,7 @@ button.primary:hover:not(:disabled) { background: #2369bd; border-color: #2369bd
 .field .lab { display: block; font-size: 12.5px; color: var(--muted); margin-bottom: 3px; }
 .field .inp { display: flex; align-items: center; gap: 6px; }
 .field input, .field select { flex: 1; min-width: 0; border: 1px solid var(--line); border-radius: 6px; padding: 5px 7px; background: #fff; }
+.field input:disabled { background: var(--line); color: var(--muted); cursor: not-allowed; }
 .field .unit { color: var(--muted); font-size: 12.5px; min-width: 34px; white-space: nowrap; }
 .field .hint, .check .hint { display: block; font-size: 11.5px; color: var(--faint); margin-top: 2px; line-height: 1.35; }
 .check { display: flex; align-items: baseline; gap: 6px; margin-bottom: 10px; flex-wrap: wrap; }

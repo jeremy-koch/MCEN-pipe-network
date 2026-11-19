@@ -7,7 +7,7 @@
 import { S, changed, select, replaceDesign } from "./state.js";
 import { analyze } from "../solver/analyze.js";
 import { designDiff } from "../solver/insight.js";
-import { pumpSpec, pumpHasDrive, pipePrice } from "../solver/design.js";
+import { pumpSpec, pumpHasDrive, drivePrice, pipePrice } from "../solver/design.js";
 import { pumpPlot } from "./pumpplot.js";
 import { gradeTab, budgetTab, sweepTab, pipeWork, moodyChart } from "./insight-tabs.js";
 import { csvButton } from "./export.js";
@@ -99,23 +99,24 @@ function energyOutput() {
   const rows = pumps.map((c) => {
     const r = S.result.comps[c.id];
     const spec = pumpSpec(c);
-    if (!r) return { cells: [c.name, spec.name, "not connected", "–", "–", "–", "–", "–", "–", "–", money(spec.price)] };
+    if (!r) return { cells: [c.name, spec.name, "not connected", "–", "–", "–", "–", "–", "–", "–", "–", money(spec.price)] };
     return {
       pick: { kind: "comp", id: c.id }, sel: S.sel?.id === c.id,
       cells: [c.name, spec.name, c.on ? "running" : "off", Ls(r.Q), fix(r.head, 2), r.on ? fix(r.eta, 3) : "–", kW(r.power),
-        fmt(perYear(r.power), 4), money(perYear(r.power) * s.price_per_kWh),
-        money(perYear(r.power) * s.price_per_kWh * s.years), money(spec.price)],
+        pumpHasDrive(c) ? kW(r.drawn) : "no drive",
+        fmt(perYear(r.drawn), 4), money(perYear(r.drawn) * s.price_per_kWh),
+        money(perYear(r.drawn) * s.price_per_kWh * s.years), money(spec.price)],
     };
   });
-  rows.push({ total: true, cells: ["All pumps", "", "", "", "", "", kW(t.power), fmt(t.kWhPerYear, 4), money(t.costPerYear), money(t.lifetimeCost), money(t.purchase)] });
-  const energy = table(["Pump", "Model", "State", "Q [L/s]", "Pump head [m]", "η", "Shaft power [kW]", "Energy [kWh/yr]", "Energy cost per year",
+  rows.push({ total: true, cells: ["All pumps", "", "", "", "", "", kW(t.power), kW(t.drawn), fmt(t.kWhPerYear, 4), money(t.costPerYear), money(t.lifetimeCost), money(t.purchase)] });
+  const energy = table(["Pump", "Model", "State", "Q [L/s]", "Pump head [m]", "η", "Shaft power [kW]", "Drawn through the drive [kW]", "Energy [kWh/yr]", "Energy cost per year",
     `Energy cost over ${fmt(s.years)} yr`, "Purchase price"], rows, { text: [1, 2] });
 
   // What it costs to buy, beside what it costs to run.
-  const driven = pumps.filter(pumpHasDrive).map((c) => c.name);
+  const driven = pumps.filter(pumpHasDrive).map((c) => `${c.name} ${money(drivePrice(c, s))}`);
   const buy = table(["Purchase", "What", "Price"], [
     { cells: ["Pumps", pumps.map((c) => pumpSpec(c).name).join(", "), money(t.purchase)] },
-    { cells: ["Variable-frequency drives", driven.length ? `${driven.length} × ${money(s.vfd_price)}: ${driven.join(", ")}` : "none", money(t.driveCost)] },
+    { cells: ["Variable-frequency drives", driven.length ? driven.join(", ") : "none", money(t.driveCost)] },
     { cells: ["Pipe", `${fmt(t.pipeLength, 4)} m in all`, money(t.pipeCost)] },
     { total: true, cells: ["All purchases", "", money(t.purchase + t.driveCost + t.pipeCost)] },
   ], { text: [1] });
@@ -124,11 +125,13 @@ function energyOutput() {
   return [
     energy, csvButton(energy, `${S.design.name} energy cost`),
     h("p", { class: "help", html: "Shaft power = ρ g Q H / η, with H the pump's own head and η its efficiency at this flow: the loss in a throttling valve downstream is energy the pump has already been paid for. " +
-      "Energy cost = shaft power × hours per year × years × electricity price, at this operating point. Motor and drive losses are not included." }),
+      `A pump with a variable-frequency drive draws more than that, since the drive passes on only ${fmt(s.vfd_eta)} of what it takes in: shaft power / ${fmt(s.vfd_eta)}. ` +
+      "Energy cost = power drawn × hours per year × years × electricity price, at this operating point. Motor losses are not included." }),
     h("h3", { class: "gap" }, "Purchase prices"),
     buy, csvButton(buy, `${S.design.name} purchase prices`),
     pipeRows.length ? table(["Pipe", "L [m]", "D [m]", "Price per metre", "Price"], pipeRows) : null,
-    h("p", { class: "help" }, "Purchase prices are for everything as drawn, running or not, and are teaching props, not quotes. A pump is counted as having a drive if its drive box is ticked or its speed ratio is not 1. " +
+    h("p", { class: "help" }, "Purchase prices are for everything as drawn, running or not, and are teaching props, not quotes. A drive is counted for every pump whose drive box is ticked, and costs the base price plus the per-kW price times the pump's rated power " +
+      "(its shaft power at the best-efficiency point at rated speed), so a bigger pump needs a dearer drive. The drive price includes installing it. " +
       "Pipe is priced per metre in proportion to its diameter. Energy cost and purchase price are shown side by side; weighing one against the other is left to you."),
   ];
 }
@@ -151,7 +154,9 @@ function energyTab() {
       box("Electricity price", "price_per_kWh", "$/kWh"),
       box("Running time", "hours_per_year", "hours/yr"),
       box("Lifetime", "years", "years"),
-      box("Drive price", "vfd_price", "$ each"),
+      box("Drive price, base", "vfd_base", "$ each"),
+      box("Drive price, per kW", "vfd_per_kW", "$/kW"),
+      box("Drive efficiency", "vfd_eta", ""),
       box("Pipe price at D = 0.10 m", "pipe_price", "$/m")),
     out,
   ];
@@ -293,6 +298,7 @@ function scenariosTab() {
   group("All pumps");
   const tot = (c) => (c.result.status === "solved" ? c.result.totals : null);
   add("shaft power [kW]", (c) => (tot(c) ? kW(tot(c).power) : null));
+  add("power drawn, with drive losses [kW]", (c) => (tot(c) ? kW(tot(c).drawn) : null));
   add("energy cost per year", (c) => (tot(c) ? money(tot(c).costPerYear) : null));
   add("energy cost over the lifetime", (c) => (tot(c) ? `${money(tot(c).lifetimeCost)} (${fmt(c.design.settings.years)} yr)` : null));
   add("purchase: pumps, drives and pipe", (c) => (tot(c) ? money(tot(c).purchase + tot(c).driveCost + tot(c).pipeCost) : null));
@@ -343,12 +349,12 @@ function scenariosTab() {
     const sum = used.reduce((t, sc) => t + sc.share, 0);
     const s = d.settings;
     const solved = used.every((sc) => analyzeScenario(sc.design).status === "solved");
-    const avg = solved ? used.reduce((t, sc) => t + (sc.share / 100) * analyzeScenario(sc.design).totals.power, 0) : null;
+    const avg = solved ? used.reduce((t, sc) => t + (sc.share / 100) * analyzeScenario(sc.design).totals.drawn, 0) : null;
     const perYear = avg === null ? null : (avg / 1000) * s.hours_per_year * s.price_per_kWh;
     blend = h("div", { class: "blend" },
       h("h3", {}, "Weighted by the share of the time in each scenario"),
       solved ? h("div", { class: "stats" },
-        h("div", { class: "stat" }, h("span", {}, "average shaft power"), h("b", {}, kW(avg)), h("i", {}, "kW")),
+        h("div", { class: "stat" }, h("span", {}, "average power drawn"), h("b", {}, kW(avg)), h("i", {}, "kW")),
         h("div", { class: "stat" }, h("span", {}, "energy cost per year"), h("b", {}, money(perYear))),
         h("div", { class: "stat" }, h("span", {}, `energy cost over ${fmt(s.years)} yr`), h("b", {}, money(perYear * s.years))))
         : h("p", { class: "help" }, "A scenario with a share is not solvable as saved, so there is no weighted figure."),

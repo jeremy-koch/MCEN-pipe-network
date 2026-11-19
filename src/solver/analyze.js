@@ -7,7 +7,7 @@
 //     fluid, patm,
 //     pipes:   { pipeId: { Q, V, Re, f, hMajor, hMinor, ... } },
 //     comps:   { compId: { H, p, ... } },
-//     totals:  { power, kWhPerYear, costPerYear, lifetimeCost,
+//     totals:  { power, driveLoss, drawn, kWhPerYear, costPerYear, lifetimeCost,
 //                purchase, drives, driveCost, pipeCost, pipeLength },
 //     lowP:    [compId]          places where the pressure is below vapor pressure
 //   }
@@ -19,7 +19,7 @@
 import { G } from "./tables.js";
 import { water, pipeState, pipeArea, pumpHead, pumpRunout, pumpNpshr, pumpEfficiency, pumpShaftPower, pumpBepFlow } from "./hydraulics.js";
 import { solveNetwork } from "./network.js";
-import { pumpSpec, pipeRoughness, pipeKTotal, pumpHasDrive, pipePrice, PORTS } from "./design.js";
+import { pumpSpec, pipeRoughness, pipeKTotal, pumpHasDrive, drivePrice, pipePrice, PORTS } from "./design.js";
 
 // Flows smaller than this [m^3/s] are reported as "no flow" (0.002 L/s).
 // It sits just above what leaks through a closed link in the solver.
@@ -65,6 +65,9 @@ function checkProperties(design, errors) {
   }
   if (!isNum(s.patm_kPa) || !(s.patm_kPa > 0)) {
     errors.push({ text: "Settings: the atmospheric pressure must be greater than zero.", ids: [] });
+  }
+  if (design.components.some((c) => c.type === "pump" && pumpHasDrive(c)) && !(isNum(s.vfd_eta) && s.vfd_eta > 0 && s.vfd_eta <= 1)) {
+    errors.push({ text: "Costs tab: the drive efficiency must be greater than 0 and no more than 1 (0.97 is typical).", ids: [] });
   }
 
   for (const c of design.components) {
@@ -498,10 +501,21 @@ export function analyze(design, options = {}) {
   // ---- energy ----
   const s = design.settings;
   const allPumps = design.components.filter((c) => c.type === "pump");
+  // A pump with a drive draws more than its shaft power: the drive loses
+  // (1 - vfd_eta) of what it takes in. Energy is billed on what is drawn.
+  for (const c of design.components) {
+    const r = c.type === "pump" ? result.comps[c.id] : null;
+    if (!r) continue;
+    r.drawn = pumpHasDrive(c) ? r.power / s.vfd_eta : r.power;
+    r.driveLoss = r.drawn - r.power;
+  }
   const power = running.reduce((sum, { r }) => sum + r.power, 0);
-  const kWhPerYear = (power / 1000) * s.hours_per_year;
+  const drawn = running.reduce((sum, { r }) => sum + r.drawn, 0);
+  const kWhPerYear = (drawn / 1000) * s.hours_per_year;
   result.totals = {
     power,
+    drawn,
+    driveLoss: drawn - power,
     kWhPerYear,
     costPerYear: kWhPerYear * s.price_per_kWh,
     lifetimeCost: kWhPerYear * s.price_per_kWh * s.years,
@@ -510,6 +524,6 @@ export function analyze(design, options = {}) {
     pipeCost: design.pipes.reduce((sum, p) => sum + pipePrice(p, s), 0),
     pipeLength: design.pipes.reduce((sum, p) => sum + (Number(p.L) || 0), 0),
   };
-  result.totals.driveCost = result.totals.drives * (Number(s.vfd_price) || 0);
+  result.totals.driveCost = allPumps.filter(pumpHasDrive).reduce((sum, c) => sum + drivePrice(c, s), 0);
   return result;
 }

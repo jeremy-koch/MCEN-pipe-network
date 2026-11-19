@@ -5,10 +5,10 @@
 //
 //   {
 //     app: "mcen3021-pipe-network",
-//     schema: 2,                      <- bump when the format changes
+//     schema: 3,                      <- bump when the format changes
 //     name: "...", author: "...", notes: "...",
 //     settings: { temperature_C, patm_kPa, price_per_kWh, hours_per_year, years,
-//                 vfd_price, pipe_price },
+//                 vfd_base, vfd_per_kW, vfd_eta, pipe_price },
 //     components: [ tank | junction | pump | valve ... ],
 //     pipes: [ ... ],
 //     labels: [ { id, x, y, text } ... ]      text written on the canvas
@@ -16,8 +16,14 @@
 //                 share = percent of the running time spent in that state
 //   }
 //
-// Schema 2 added author, notes, labels, the two prices, a pump's "vfd" flag
+// Schema 2 added author, notes, labels, the prices, a pump's "vfd" flag
 // and a scenario's share. A schema 1 file opens with those at their defaults.
+// Schema 3 priced each drive by the size of its pump (vfd_base + vfd_per_kW)
+// in place of one flat vfd_price, added the drive's efficiency (vfd_eta),
+// and made the drive box the switch for the
+// speed ratio: a pump without a drive runs at rated speed. An older file's
+// vfd_price is dropped, and a pump saved at a speed ratio other than 1 opens
+// with its drive box ticked.
 //
 // Components sit on the canvas at (x, y) and have ports that pipes attach
 // to. A tank or junction has one port, "a", which takes any number of pipes.
@@ -27,7 +33,8 @@
 //   junction: { id, type, name, x, y, z, Qin_Ls }   Qin_Ls = flow set at the
 //             junction, L/s: > 0 enters the network there, < 0 leaves it
 //   pump:     { id, type, name, x, y, rot, z, model, custom, speed, on, ideal, vfd }
-//             ideal = true holds the efficiency at its peak at every flow
+//             ideal = true sets the efficiency to 1 at every flow
+//             vfd = true: the pump has a drive, and speed may differ from 1
 //   valve:    { id, type, name, x, y, rot, z, K, D, closed }   closed = true passes no flow
 //   pipe:     { id, name, from: {comp, port}, to: {comp, port}, mid,
 //               L, D, material, eps_mm, fittings: [{kind, n}], K_extra }
@@ -35,10 +42,10 @@
 // Units in the file are the units shown in the app: m, kPa, °C, and mm for
 // roughness. The solver converts to plain SI.
 
-import { PUMP_CATALOG, ROUGHNESS, FITTINGS } from "./tables.js";
+import { PUMP_CATALOG, ROUGHNESS, FITTINGS, G } from "./tables.js";
 
 export const APP_ID = "mcen3021-pipe-network";
-export const SCHEMA = 2;
+export const SCHEMA = 3;
 
 export const DEFAULT_SETTINGS = {
   temperature_C: 20,
@@ -46,7 +53,14 @@ export const DEFAULT_SETTINGS = {
   price_per_kWh: 0.12,
   hours_per_year: 6000,
   years: 10,
-  vfd_price: 4000, // $ for one variable-frequency drive (a teaching prop)
+  // A variable-frequency drive costs vfd_base + vfd_per_kW x (the pump's
+  // rated power), installed (wiring, panel, labour), so a big pump's drive
+  // costs more. Teaching props, roughly the size of real installed prices.
+  vfd_base: 2500, // $
+  vfd_per_kW: 250, // $ per kW
+  // A drive passes vfd_eta of the electrical power on to the motor; the rest
+  // is lost as heat. A pump with a drive draws (shaft power) / vfd_eta.
+  vfd_eta: 0.97,
   pipe_price: 150, // $ per metre of 0.10 m pipe; other sizes in proportion to D
 };
 
@@ -108,9 +122,29 @@ export function addLabel(design, x, y, text = "Text") {
 }
 
 // Does this pump have a variable-frequency drive to pay for? Yes if the box
-// is ticked, and also whenever it runs at anything but its rated speed.
+// is ticked. (The panel only lets the speed ratio move off 1 when it is, but
+// a design built in code might not, so an off-rated speed counts too.)
 export function pumpHasDrive(pump) {
   return !!pump.vfd || Number(pump.speed) !== 1;
+}
+
+// Rated power of a pump in kW, the size its motor and drive are bought for:
+// shaft power at the best-efficiency point at rated speed,
+//   rho g Q_bep H_bep / eta_max,  Q_bep = sqrt(h0/(3a)),  H_bep = 2/3 h0.
+// Water at 20 C. It is a property of the hardware, so it does not depend on
+// where the pump runs, its speed ratio, or the "ideal efficiency" box.
+export function pumpRatedPower_kW(pump) {
+  const sp = pumpSpec(pump);
+  const h0 = Number(sp.h0), a = Number(sp.a), eta = Number(sp.eta);
+  if (!(h0 > 0 && a > 0 && eta > 0)) return 0;
+  const Qbep = Math.sqrt(h0 / (3 * a));
+  return (998.2 * G * Qbep * (2 / 3) * h0) / eta / 1000;
+}
+
+// Price of a variable-frequency drive for this pump, whether or not it has one.
+export function drivePrice(pump, settings) {
+  const v = (Number(settings.vfd_base) || 0) + (Number(settings.vfd_per_kW) || 0) * pumpRatedPower_kW(pump);
+  return v > 0 ? v : 0;
 }
 
 // Purchase price of a pipe: pipe_price dollars per metre at D = 0.10 m, in
@@ -180,10 +214,14 @@ export function loadDesign(obj) {
   d.author = typeof obj.author === "string" ? obj.author : "";
   d.notes = typeof obj.notes === "string" ? obj.notes : "";
   d.settings = { ...DEFAULT_SETTINGS, ...(obj.settings || {}) };
+  delete d.settings.vfd_price; // schema 2's flat drive price; see the top of this file
   for (const c of obj.components || []) {
     if (!PORTS[c.type] || typeof c.id !== "string") continue;
     const comp = { ...defaultProps(c.type), ...c };
-    if (c.type === "pump") comp.custom = { ...DEFAULT_CUSTOM_PUMP, ...(c.custom || {}) };
+    if (c.type === "pump") {
+      comp.custom = { ...DEFAULT_CUSTOM_PUMP, ...(c.custom || {}) };
+      if (Number(comp.speed) !== 1) comp.vfd = true; // off rated speed means it has a drive
+    }
     d.components.push(comp);
   }
   const ids = new Map(d.components.map((c) => [c.id, c]));

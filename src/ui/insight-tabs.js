@@ -110,8 +110,9 @@ export function budgetTab() {
   const b = powerBudget(S.design, S.result);
   const s = S.design.settings;
   const sources = [], uses = [];
-  if (b.shaft > 0) sources.push(["shaft power to the pumps", b.shaft]);
+  if (b.shaft > 0) sources.push([b.drive > 0 ? "power drawn by the pumps (through their drives)" : "shaft power to the pumps", b.shaft + b.drive]);
   if (b.lift < 0) sources.push(["water ending up lower than it started", -b.lift]);
+  if (b.drive > 0) uses.push(["lost in the drives", b.drive, COLORS[5]]);
   if (b.pumpLoss > 0) uses.push(["lost inside the pumps (1 − η)", b.pumpLoss, COLORS[7]]);
   if (b.major > 0) uses.push(["pipe friction (major losses)", b.major, COLORS[0]]);
   if (b.minor > 0) uses.push(["fittings (minor losses)", b.minor, COLORS[3]]);
@@ -135,7 +136,7 @@ export function budgetTab() {
     ...(sources.length > 1 ? [row("total in", total, { total: true })] : []),
     ...uses.map(([name, W, color]) => row(swatch(name, color), W)),
   ]);
-  const KIND = { "pump loss": "lost inside the pump", major: "pipe friction", minor: "fittings", valve: "valve" };
+  const KIND = { "drive loss": "lost in the drive", "pump loss": "lost inside the pump", major: "pipe friction", minor: "fittings", valve: "valve" };
   const detail = table(["Where", "What"].concat(head.slice(1)), b.items.map((it) => {
     const isPipe = S.design.pipes.some((p) => p.id === it.id);
     return { pick: { kind: isPipe ? "pipe" : "comp", id: it.id }, sel: S.sel?.id === it.id,
