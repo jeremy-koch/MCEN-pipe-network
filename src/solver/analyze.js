@@ -451,6 +451,16 @@ export function analyze(design, options = {}) {
             ids: [c.id],
           });
         }
+        // A number, not a verdict: the margin is negative, and the student
+        // decides what to do about it. (The pump plot shows the same thing.)
+        if (Q > 0 && r.npsha < r.npshr) {
+          notes.push({
+            text: `Pump ${q(c.name)}: NPSH available (${fmt(r.npsha)} m) is below NPSH required (${fmt(r.npshr)} m) at Q = ${fmt(Q * 1000)} L/s, ` +
+              `so NPSH available − NPSH required = ${fmt(r.npsha - r.npshr)} m. The pump plot shows both curves. ` +
+              "NPSH available rises if the pump sits lower or the suction line loses less; NPSH required falls at a lower flow per pump or a lower speed.",
+            ids: [c.id],
+          });
+        }
         if (Q >= runout) {
           notes.push({
             text: `Pump ${q(c.name)} is running beyond the end of its curve: Q = ${fmt(Q * 1000)} L/s, and the curve reaches zero head at ${fmt(runout * 1000)} L/s. ` +

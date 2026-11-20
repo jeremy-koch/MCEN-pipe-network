@@ -194,3 +194,18 @@ test("design files: round trip, and bad files are refused with a reason", () => 
   assert.throws(() => loadDesign({ hello: 1 }), /not a pipe network design/);
   assert.throws(() => loadDesign({ ...d, schema: 99 }), /newer version/);
 });
+
+test("note: NPSH available below required names the pump and gives both numbers", () => {
+  const d = simpleLift();
+  assert.ok(!analyze(d).notes.some((n) => n.text.includes("NPSH available")), "no note with a positive margin (6.28 m available, 2.01 m required)");
+  const pump = byType(d, "pump")[0];
+  pump.z += 5; // lifting the pump 5 m takes about 5 m off NPSH available
+  const r = analyze(d);
+  assert.equal(r.status, "solved"); // a note, not an error: the result still shows
+  const c = r.comps[pump.id];
+  assert.ok(c.npsha < c.npshr);
+  const note = r.notes.find((n) => n.text.includes("NPSH available"));
+  assert.ok(note, "there is an NPSH note");
+  assert.deepEqual(note.ids, [pump.id]);
+  assert.ok(note.text.includes(pump.name));
+});
